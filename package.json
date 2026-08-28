@@ -1,6 +1,6 @@
 {
   "name": "secondsight",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "See what the machine sees. A microscope for the invisible characters hiding in text: ASCII smuggling, Trojan Source, zero-width payloads and homoglyphs.",
   "type": "module",
   "license": "MIT",
@@ -14,6 +14,7 @@
     "./catalog": "./src/catalog.js",
     "./decode": "./src/decode.js",
     "./encode": "./src/encode.js",
+    "./sarif": "./src/sarif.js",
     "./specimens": "./src/specimens.js"
   },
   "files": [

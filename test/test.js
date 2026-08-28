@@ -28,6 +28,7 @@ import {
 } from '../src/decode.js';
 import { describe as describeCodepoint } from '../src/catalog.js';
 import { SPECIMENS } from '../src/specimens.js';
+import { buildSarif } from '../src/sarif.js';
 
 const cp = (...codes) => codes.map((c) => String.fromCodePoint(c)).join('');
 const findingIds = (r) => r.findings.map((f) => f.id);
@@ -374,6 +375,55 @@ describe('ANSI parsing', () => {
 
   test('a plain colour reset is not dangerous', () => {
     assert.equal(findAnsiSequences(cp(0x1b) + '[0m')[0].dangerous, false);
+  });
+});
+
+describe('SARIF output', () => {
+  const tag = (s) => [...s].map((c) => String.fromCodePoint(0xe0000 + c.codePointAt(0))).join('');
+  const report = (path, text) => ({ path, result: analyze(text) });
+
+  test('is a well-formed SARIF 2.1.0 log', () => {
+    const sarif = buildSarif([report('a.md', 'ok' + tag('hidden payload here'))], { version: '9.9.9' });
+    assert.equal(sarif.version, '2.1.0');
+    assert.match(sarif.$schema, /sarif-2\.1\.0/);
+    const driver = sarif.runs[0].tool.driver;
+    assert.equal(driver.name, 'secondsight');
+    assert.equal(driver.version, '9.9.9');
+    assert.equal(sarif.runs[0].columnKind, 'utf16CodeUnits');
+  });
+
+  test('emits one result per finding, anchored to a line and column', () => {
+    // Payload sits on line 3; column follows the visible prefix on that line.
+    const text = 'line one\nline two\nreview:' + tag('ignore instructions') + '\n';
+    const sarif = buildSarif([report('src/x.js', text)]);
+    const res = sarif.runs[0].results.find((r) => r.ruleId === 'tags-block');
+    assert.ok(res, 'expected a tags-block result');
+    assert.equal(res.level, 'error');
+    const region = res.locations[0].physicalLocation.region;
+    assert.equal(region.startLine, 3);
+    assert.equal(region.startColumn, 'review:'.length + 1);
+    assert.equal(res.locations[0].physicalLocation.artifactLocation.uri, 'src/x.js');
+  });
+
+  test('registers a rule for every finding id, with a GitHub severity', () => {
+    const sarif = buildSarif([report('a.md', 'x' + tag('payload payload'))]);
+    const rule = sarif.runs[0].tool.driver.rules.find((r) => r.id === 'tags-block');
+    assert.ok(rule);
+    assert.equal(rule.defaultConfiguration.level, 'error');
+    assert.ok(Number(rule.properties['security-severity']) >= 7);
+  });
+
+  test('maps severities to SARIF levels', () => {
+    const critical = buildSarif([report('a', 'x' + tag('secret'))]);
+    assert.equal(critical.runs[0].results[0].level, 'error');
+    // Curly quotes are a LOW finding -> note.
+    const low = buildSarif([report('b', 'say ' + String.fromCodePoint(0x201c) + 'hi' + String.fromCodePoint(0x201d))]);
+    assert.ok(low.runs[0].results.every((r) => r.level === 'note'));
+  });
+
+  test('normalises Windows paths and survives clean input', () => {
+    const sarif = buildSarif([report('src\\deep\\file.js', 'perfectly clean text')]);
+    assert.deepEqual(sarif.runs[0].results, []);
   });
 });
 

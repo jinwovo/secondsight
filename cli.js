@@ -13,6 +13,9 @@ import { readFileSync, writeFileSync, statSync, readdirSync } from 'node:fs';
 import { join, relative, extname, basename } from 'node:path';
 import { analyze, SEVERITY } from './src/detect.js';
 import { sanitize } from './src/sanitize.js';
+import { buildSarif } from './src/sarif.js';
+
+const VERSION = '1.2.0';
 
 const USAGE = `
 secondsight -- find the text you cannot see
@@ -23,6 +26,7 @@ secondsight -- find the text you cannot see
 
 Options
   --json             machine-readable output
+  --sarif [file]     SARIF 2.1.0 for GitHub code scanning (stdout, or to <file>)
   --fix              rewrite files with hidden characters removed
   --fail-on <level>  exit 1 at or above this severity
                      (info|low|medium|high|critical; default: high)
@@ -35,13 +39,24 @@ Options
 
 const args = process.argv.slice(2);
 const opts = {
-  json: false, fix: false, all: false, color: true, failOn: 3, paths: [],
+  json: false, sarif: false, sarifPath: null,
+  fix: false, all: false, color: true,
+  failOn: 3, failOnExplicit: false, paths: [],
 };
 
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--json') opts.json = true;
-  else if (a === '--fix') opts.fix = true;
+  else if (a === '--sarif') {
+    opts.sarif = true;
+    // Optional filename: the next arg, unless it is another flag or a path
+    // that exists (which would be a scan target, not the output file).
+    const next = args[i + 1];
+    if (next && !next.startsWith('-') && !existsAsPath(next)) {
+      opts.sarifPath = next;
+      i++;
+    }
+  } else if (a === '--fix') opts.fix = true;
   else if (a === '--all') opts.all = true;
   else if (a === '--no-color') opts.color = false;
   else if (a === '--fail-on') {
@@ -49,9 +64,15 @@ for (let i = 0; i < args.length; i++) {
     const idx = SEVERITY.indexOf(level);
     if (idx < 0) { fail('unknown severity: ' + level); }
     opts.failOn = idx;
+    opts.failOnExplicit = true;
   } else if (a === '-h' || a === '--help') { process.stdout.write(USAGE); process.exit(0); }
+  else if (a === '--version' || a === '-v') { process.stdout.write(VERSION + '\n'); process.exit(0); }
   else if (a.startsWith('-')) fail('unknown option: ' + a);
   else opts.paths.push(a);
+}
+
+function existsAsPath(p) {
+  try { statSync(p); return true; } catch { return false; }
 }
 
 function fail(message) {
@@ -152,7 +173,7 @@ if (!opts.paths.length) {
   const result = analyze(text);
   worst = result.verdict.severity;
   reports.push({ path: '<stdin>', result });
-  if (!opts.json) reportText('<stdin>', result);
+  if (!opts.json && !opts.sarif) reportText('<stdin>', result);
 } else {
   for (const path of targets) {
     let text;
@@ -160,13 +181,13 @@ if (!opts.paths.length) {
     const result = analyze(text);
     worst = Math.max(worst, result.verdict.severity);
     reports.push({ path, result });
-    if (!opts.json) reportText(relative(process.cwd(), path) || path, result);
+    if (!opts.json && !opts.sarif) reportText(relative(process.cwd(), path) || path, result);
 
     if (opts.fix && result.verdict.severity >= 0) {
       const cleaned = sanitize(text);
       if (cleaned.text !== text) {
         writeFileSync(path, cleaned.text, 'utf8');
-        if (!opts.json) {
+        if (!opts.json && !opts.sarif) {
           process.stdout.write('  ' + paint('32', 'fixed') + dim(
             '  removed ' + cleaned.removed + ' character' + (cleaned.removed === 1 ? '' : 's'),
           ) + '\n');
@@ -176,7 +197,25 @@ if (!opts.paths.length) {
   }
 }
 
-if (opts.json) {
+if (opts.sarif) {
+  const sarif = buildSarif(
+    reports.map(({ path, result }) => ({
+      path: opts.paths.length ? relative(process.cwd(), path) || path : path,
+      result,
+    })),
+    { version: VERSION },
+  );
+  const json = JSON.stringify(sarif, null, 2) + '\n';
+  if (opts.sarifPath) {
+    writeFileSync(opts.sarifPath, json, 'utf8');
+    process.stderr.write(
+      'secondsight: wrote ' + sarif.runs[0].results.length
+      + ' result(s) to ' + opts.sarifPath + '\n',
+    );
+  } else {
+    process.stdout.write(json);
+  }
+} else if (opts.json) {
   process.stdout.write(JSON.stringify({
     version: 1,
     worst: worst < 0 ? 'CLEAN' : SEVERITY[worst],
@@ -204,4 +243,8 @@ if (opts.json) {
   ) + '\n');
 }
 
-process.exit(worst >= opts.failOn ? 1 : 0);
+// With --sarif, GitHub's code scanning decides how to surface and gate the
+// findings, so the scan step itself must succeed for the upload to run -- unless
+// the caller explicitly asked for a --fail-on gate as well.
+const gate = opts.sarif && !opts.failOnExplicit ? Infinity : opts.failOn;
+process.exit(worst >= gate ? 1 : 0);

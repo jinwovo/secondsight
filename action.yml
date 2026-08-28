@@ -15,6 +15,10 @@ inputs:
     description: 'Minimum severity that fails the build: info | low | medium | high | critical.'
     required: false
     default: 'high'
+  sarif:
+    description: 'When set to an output path, write SARIF for GitHub code scanning instead of gating the build. Pair with github/codeql-action/upload-sarif.'
+    required: false
+    default: ''
   args:
     description: 'Extra arguments passed through to the CLI (for example --json).'
     required: false
@@ -26,10 +30,12 @@ runs:
     - shell: bash
       # $GITHUB_ACTION_PATH is this action's own checkout; the CLI resolves its
       # imports relative to its own file, so it runs correctly from any working
-      # directory and scans the caller's checked-out repository.
+      # directory and scans the caller's checked-out repository. With `sarif`
+      # set it writes a report and succeeds so the upload step can run; without
+      # it, the action is a pass/fail gate on the given severity.
       run: >-
-        node "$GITHUB_ACTION_PATH/cli.js"
-        ${{ inputs.paths }}
-        --fail-on ${{ inputs.fail-on }}
-        --no-color
-        ${{ inputs.args }}
+        if [ -n "${{ inputs.sarif }}" ]; then
+          node "$GITHUB_ACTION_PATH/cli.js" ${{ inputs.paths }} --sarif "${{ inputs.sarif }}" ${{ inputs.args }};
+        else
+          node "$GITHUB_ACTION_PATH/cli.js" ${{ inputs.paths }} --fail-on ${{ inputs.fail-on }} --no-color ${{ inputs.args }};
+        fi

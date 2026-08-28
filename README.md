@@ -93,6 +93,29 @@ Or without the Action, on any runner that has Node:
 
 `--fail-on` (and the Action's `fail-on`) takes `info`, `low`, `medium`, `high`, or `critical`. The build fails at or above that level.
 
+**As GitHub code scanning** -- upload findings to the Security tab, where each one becomes an inline annotation on the pull request. secondsight emits [SARIF 2.1.0](https://sarifweb.azurewebsites.net/), with codepoint offsets resolved to line and column:
+
+```yaml
+# .github/workflows/secondsight.yml
+name: secondsight
+on: [push, pull_request]
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write        # required to upload SARIF
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jinwovo/secondsight@v1
+        with:
+          sarif: secondsight.sarif   # write a report instead of gating
+      - uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: secondsight.sarif
+```
+
+The same output is available straight from the CLI: `npx github:jinwovo/secondsight . --sarif secondsight.sarif`. With `--sarif` the scan succeeds so the upload can run, and GitHub decides how to surface and gate the alerts; add `--fail-on <level>` if you also want the step itself to fail.
+
 ## As a library
 
 Zero dependencies, ESM, runs anywhere modern JavaScript runs.
