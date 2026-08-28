@@ -18,15 +18,14 @@
   },
   "files": [
     "cli.js",
-    "src/",
-    "index.html",
-    "assets/"
+    "src/"
   ],
   "engines": {
     "node": ">=18"
   },
   "scripts": {
     "test": "node --test test/test.js",
+    "prepublishOnly": "node --test test/test.js",
     "scan": "node cli.js . --fail-on medium",
     "selfcheck": "node cli.js src cli.js index.html assets test action.yml --fail-on low --all",
     "serve": "node --run-if-present serve || python -m http.server 8080"
