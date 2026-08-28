@@ -29,4 +29,4 @@ jobs:
         with:
           node-version: '20'
       - name: secondsight scans secondsight
-        run: node cli.js src cli.js index.html assets test README.md --fail-on medium --no-color
+        run: node cli.js src cli.js index.html assets test README.md action.yml --fail-on medium --no-color

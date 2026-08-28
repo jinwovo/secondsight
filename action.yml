@@ -1,0 +1,35 @@
+name: 'secondsight'
+description: 'Fail the build when invisible or hidden Unicode is smuggled into your files -- ASCII smuggling, Trojan Source, zero-width payloads, homoglyphs.'
+author: 'jinwovo'
+
+branding:
+  icon: 'eye'
+  color: 'red'
+
+inputs:
+  paths:
+    description: 'Space-separated files or directories to scan.'
+    required: false
+    default: '.'
+  fail-on:
+    description: 'Minimum severity that fails the build: info | low | medium | high | critical.'
+    required: false
+    default: 'high'
+  args:
+    description: 'Extra arguments passed through to the CLI (for example --json).'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - shell: bash
+      # $GITHUB_ACTION_PATH is this action's own checkout; the CLI resolves its
+      # imports relative to its own file, so it runs correctly from any working
+      # directory and scans the caller's checked-out repository.
+      run: >-
+        node "$GITHUB_ACTION_PATH/cli.js"
+        ${{ inputs.paths }}
+        --fail-on ${{ inputs.fail-on }}
+        --no-color
+        ${{ inputs.args }}

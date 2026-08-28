@@ -1,5 +1,10 @@
 # secondsight
 
+[![ci](https://github.com/jinwovo/secondsight/actions/workflows/ci.yml/badge.svg)](https://github.com/jinwovo/secondsight/actions/workflows/ci.yml)
+[![live demo](https://img.shields.io/badge/demo-jinwovo.github.io-4ec9d9)](https://jinwovo.github.io/secondsight/)
+[![zero dependencies](https://img.shields.io/badge/dependencies-0-3fb950)](https://github.com/jinwovo/secondsight/blob/main/package.json)
+[![license](https://img.shields.io/badge/license-MIT-blue)](https://github.com/jinwovo/secondsight/blob/main/LICENSE)
+
 **See what the machine sees.** A microscope for the characters hiding in text -- the ones your eyes, your editor, and your diff all agree aren't there, and the tokenizer reads anyway.
 
 Paste anything and the screen splits in two: what **you** see, and what the **machine** sees. When those two readings disagree, something is hidden -- and secondsight decodes it, names it, and tells you what it says.
@@ -63,7 +68,7 @@ npx github:jinwovo/secondsight suspicious.md --fix
 npx github:jinwovo/secondsight . --json
 ```
 
-**In CI** -- fail a build when someone slips invisible characters into an instruction file, a lockfile, or a commit:
+**In CI, as a GitHub Action** -- fail a build when someone slips invisible characters into an instruction file, a lockfile, or a commit. One step, nothing to install:
 
 ```yaml
 # .github/workflows/secondsight.yml
@@ -74,12 +79,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '20' }
+      - uses: jinwovo/secondsight@v1
+        with:
+          paths: '.'          # optional, defaults to the whole repo
+          fail-on: high       # info | low | medium | high | critical
+```
+
+Or without the Action, on any runner that has Node:
+
+```yaml
       - run: npx github:jinwovo/secondsight . --fail-on high
 ```
 
-`--fail-on` takes `info`, `low`, `medium`, `high`, or `critical`. The exit code is non-zero at or above that level.
+`--fail-on` (and the Action's `fail-on`) takes `info`, `low`, `medium`, `high`, or `critical`. The build fails at or above that level.
 
 ## As a library
 

@@ -28,7 +28,7 @@
   "scripts": {
     "test": "node --test test/test.js",
     "scan": "node cli.js . --fail-on medium",
-    "selfcheck": "node cli.js src cli.js index.html assets test --fail-on low --all",
+    "selfcheck": "node cli.js src cli.js index.html assets test action.yml --fail-on low --all",
     "serve": "node --run-if-present serve || python -m http.server 8080"
   },
   "keywords": [
