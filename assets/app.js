@@ -136,7 +136,7 @@ function renderMachine(result) {
   const s = result.stats;
   el.countMachine.textContent = result.text
     ? num(s.codepoints) + ' codepoints'
-      + (s.hidden ? '  ·  ' + num(s.hidden) + ' invisible' : '')
+      + (s.hidden ? '  |  ' + num(s.hidden) + ' invisible' : '')
     : '';
 }
 
@@ -585,6 +585,7 @@ const EXPLAINERS = [
   ['Zero-width characters', 'Occupy no space, survive copy-paste. Four of them make a two-bit channel.', 'U+200B-U+200D, U+2060, U+FEFF'],
   ['Bidirectional overrides', 'Displayed order stops matching stored order. Source reviews one way and compiles another.', 'CVE-2021-42574'],
   ['Homoglyphs', 'Letters from other alphabets drawn identically to ASCII. They read the same and compare unequal.', 'Cyrillic, Greek, Armenian, Cherokee'],
+  ['Homograph domains', 'A link that reads as one domain and resolves to another. The punycode is what your browser actually visits.', 'IDN / punycode (xn--)'],
   ['ANSI escapes', 'A terminal is a renderer, and renderers can be told to lie. Cursor moves rewrite printed lines.', 'CSI and OSC sequences'],
   ['Noncharacters and PUA', 'Codepoints with no assigned meaning. Parsers disagree about them, which is the point.', 'U+FDD0-U+FDEF, U+E000-U+F8FF'],
   ['Normalisation drift', 'Text that changes when normalised can pass validation in one form and take effect in another.', 'NFC / NFKC'],

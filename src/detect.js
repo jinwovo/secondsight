@@ -186,8 +186,8 @@ function tokenizeWords(text) {
   let current = '';
   let start = 0;
   let offset = 0;
-  const flush = () => {
-    if (current.length >= 2) words.push({ word: current, start });
+  const flush = (end) => {
+    if (current.length >= 2) words.push({ word: current, start, end });
     current = '';
   };
   for (const ch of text) {
@@ -195,12 +195,75 @@ function tokenizeWords(text) {
       if (!current) start = offset;
       current += ch;
     } else {
-      flush();
+      flush(offset);
     }
     offset += ch.length;
   }
-  flush();
+  flush(offset);
   return words;
+}
+
+/** True when [start, end) overlaps any [lo, hi) range in the list. */
+function overlapsAny(start, end, ranges) {
+  return ranges.some(([lo, hi]) => start < hi && lo < end);
+}
+
+/**
+ * Hostnames that read as one domain and resolve to another.
+ *
+ * The reveal here is punycode: a browser and a DNS resolver do not see the
+ * pretty Unicode name, they see its ToASCII form, and `new URL().hostname`
+ * computes exactly that -- in the browser and in Node alike, with no
+ * dependency. When a host contains a letter drawn like ASCII but taken from
+ * another alphabet, the name you read and the name that resolves are two
+ * different strings, and this returns both.
+ *
+ * Legitimate internationalised domains -- Japanese, Arabic, Greek written in
+ * their own script -- are left alone: none of their letters have an ASCII twin
+ * in the confusables table, so there is nothing here to imitate.
+ */
+const HOST_RE =
+  /(?<![\p{L}\p{N}._@-])(?:https?:\/\/)?((?:[\p{L}\p{N}][\p{L}\p{N}-]*\.)+\p{L}{2,})/giu;
+
+function findHomographHosts(text) {
+  const out = [];
+  HOST_RE.lastIndex = 0;
+  let m;
+  while ((m = HOST_RE.exec(text)) !== null) {
+    const host = m[1];
+    const start = m.index + m[0].length - host.length;
+
+    let imitates = '';
+    let hasConfusable = false;
+    let allProjectable = true;
+    const scripts = new Set();
+    for (const ch of host) {
+      const cp = ch.codePointAt(0);
+      if (cp < 0x80) { imitates += ch; continue; }
+      const c = CONFUSABLES.get(cp);
+      if (c && /[a-z0-9.-]/i.test(c.to)) {
+        imitates += c.to;
+        hasConfusable = true;
+        scripts.add(c.script);
+      } else {
+        imitates += ch;
+        allProjectable = false;
+      }
+    }
+    // A homograph imitates an ASCII domain: every non-ASCII letter must be a
+    // lookalike, and at least one must be. Otherwise it is an honest IDN.
+    if (!hasConfusable || !allProjectable) continue;
+
+    let puny = null;
+    try { puny = new URL('http://' + host).hostname; } catch { /* not a host */ }
+    if (!puny || !/^xn--|\bxn--/.test(puny)) continue;
+
+    out.push({
+      host, start, end: start + host.length,
+      punycode: puny, imitates, scripts: [...scripts],
+    });
+  }
+  return out;
 }
 
 /**
@@ -211,10 +274,11 @@ function tokenizeWords(text) {
  * their own script with Latin inside one token, so those combinations are not
  * treated as suspicious.
  */
-function findMixedScriptWords(text) {
+function findMixedScriptWords(text, hostSpans = []) {
   const out = [];
   for (const w of tokenizeWords(text)) {
     if (!LATIN_RE.test(w.word)) continue;
+    if (overlapsAny(w.start, w.end, hostSpans)) continue;   // the URL finding owns it
     const foreign = [];
     for (const [name, re] of HOMOGLYPH_SCRIPTS) {
       if (re.test(w.word)) foreign.push(name);
@@ -263,10 +327,11 @@ function nativeScripts(text) {
  * that carries a fifth of the document is treated as the language it is, and
  * words in it are left alone.
  */
-function findSpoofedWords(text, native = nativeScripts(text)) {
+function findSpoofedWords(text, native = nativeScripts(text), hostSpans = []) {
   const out = [];
   for (const w of tokenizeWords(text)) {
     if (w.word.length < 4 || LATIN_RE.test(w.word)) continue;
+    if (overlapsAny(w.start, w.end, hostSpans)) continue;   // the URL finding owns it
     let projected = '';
     let script = null;
     let ok = true;
@@ -563,10 +628,39 @@ function analyzeAnsi(text) {
  * correct typography; in code they are the reason a paste will not run. Worth
  * saying, not worth alarming anyone about.
  */
-function analyzeConfusables(cells, text) {
+/**
+ * Homograph domains. Returns the finding (or nothing) and the byte spans of
+ * the flagged hosts, so the word-level confusable checks can defer to it
+ * instead of reporting the same characters twice.
+ */
+function analyzeUrls(text) {
+  const hosts = findHomographHosts(text);
+  if (!hosts.length) return { findings: [], spans: [] };
+
+  const spans = hosts.map((h) => [h.start, h.end]);
+  const f = finding({
+    id: 'homograph-url',
+    title: 'Homograph domain: the link is not where it appears to go',
+    severity: HIGH,
+    kind: KIND.CONFUSABLE,
+    count: hosts.length,
+    positions: hosts.map((h) => h.start),
+    samples: hosts.slice(0, 5).map((h) => h.host + '  ->  ' + h.punycode),
+    reference: 'IDN homograph attack',
+    detail:
+      'These hostnames contain letters from another alphabet drawn identically to ASCII. ' +
+      'A browser and a DNS resolver do not use the name you read -- they use its punycode ' +
+      'form, shown above. So "' + hosts[0].host + '" looks like "' + hosts[0].imitates +
+      '" and resolves to "' + hosts[0].punycode + '", somewhere else entirely. This is how ' +
+      'a phishing link survives a careful second look.',
+  });
+  return { findings: [f], spans };
+}
+
+function analyzeConfusables(cells, text, hostSpans = []) {
   const out = [];
-  const mixed = findMixedScriptWords(text);
-  const spoofed = findSpoofedWords(text);
+  const mixed = findMixedScriptWords(text, hostSpans);
+  const spoofed = findSpoofedWords(text, nativeScripts(text), hostSpans);
 
   const punct = cells.filter(
     (c) => c.confusable && c.confusable.via === 'script' && !isLetterLookalike(c.confusable),
@@ -825,6 +919,11 @@ export function analyze(text) {
 
   const cells = markConfusables(applyContext(buildCells(text)));
 
+  // Homograph hosts are found first: the confusable word checks defer to the
+  // URL finding for characters inside a flagged host, so the same letters are
+  // never reported twice.
+  const urls = analyzeUrls(text);
+
   const findings = [
     ...analyzeTags(cells),
     ...analyzeVariationSelectors(cells),
@@ -832,7 +931,8 @@ export function analyze(text) {
     ...analyzeBidi(cells, text),
     ...analyzeAnsi(text),
     ...analyzeControls(cells),
-    ...analyzeConfusables(cells, text),
+    ...urls.findings,
+    ...analyzeConfusables(cells, text, urls.spans),
     ...analyzeMisc(cells, text),
     ...analyzeSpaces(cells),
     ...analyzeNormalization(text),

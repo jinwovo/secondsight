@@ -126,7 +126,7 @@ const { text, changes, removed } = sanitize(untrustedText);
 
 ## What it looks for
 
-Tags block | variation-selector payloads | zero-width steganography (decoded across the common encodings) | bidirectional overrides and isolates (Trojan Source) | ANSI escape sequences that rewrite terminal output | homoglyphs and mixed-script words | full-width and mathematical compatibility forms | Unicode noncharacters and Private Use Area | deprecated format characters | interlinear annotation | stacked combining marks | unusual spaces | normalization drift. Every finding carries its codepoint offsets, and the decoders round-trip against their own encoders in the test suite.
+Tags block | variation-selector payloads | zero-width steganography (decoded across the common encodings) | bidirectional overrides and isolates (Trojan Source) | ANSI escape sequences that rewrite terminal output | homoglyphs and mixed-script words | **homograph domains, with the punycode they resolve to** | full-width and mathematical compatibility forms | Unicode noncharacters and Private Use Area | deprecated format characters | interlinear annotation | stacked combining marks | unusual spaces | normalization drift. Every finding carries its codepoint offsets, and the decoders round-trip against their own encoders in the test suite.
 
 ## Honest limitations
 
@@ -142,7 +142,7 @@ npm run selfcheck            # the tool scans its own source and finds it clean
 python -m http.server 8080   # then open http://localhost:8080
 ```
 
-The source is deliberately pure ASCII, and every codepoint it describes is written as a number rather than as the character itself -- a homoglyph table typed out as glyphs is a table nobody can review. A tool that hunts invisible characters has no business smuggling any through its own source, and `npm run selfcheck` proves it doesn't.
+The engine is pure ASCII: every codepoint the detector describes is written as a number, never as the glyph, because a homoglyph table typed out as glyphs is a table nobody can review. The one file that carries real non-ASCII is the gallery's clean control specimen -- genuine Korean, Russian and Arabic, kept as themselves because a greeting is more auditable than a column of escapes. `npm run selfcheck` scans the whole repo, reads that control specimen, and still comes back clean. The tool passes its own test twice over: it smuggles nothing through its source, and it does not cry wolf over honest multilingual text.
 
 ## License
 

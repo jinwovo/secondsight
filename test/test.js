@@ -166,6 +166,23 @@ describe('detection', () => {
     assert.deepEqual(byId(r, 'zero-width').positions, [2]);
   });
 
+  test('a homograph domain is flagged and its punycode revealed', () => {
+    // p, Cyrillic a, y, p, Cyrillic a, l . com
+    const host = 'p' + cp(0x0430) + 'yp' + cp(0x0430) + 'l.com';
+    const f = byId(analyze('log in at http://' + host + '/x'), 'homograph-url');
+    assert.ok(f, 'expected a homograph-url finding');
+    assert.equal(f.severity, HIGH);
+    assert.ok(f.samples[0].includes('xn--'), 'should reveal punycode: ' + f.samples[0]);
+  });
+
+  test('a homograph domain does not also fire a duplicate word finding', () => {
+    const host = 'p' + cp(0x0430) + 'yp' + cp(0x0430) + 'l.com';
+    const r = analyze('http://' + host);
+    assert.ok(byId(r, 'homograph-url'));
+    assert.equal(byId(r, 'mixed-script'), undefined);
+    assert.equal(byId(r, 'spoofed-word'), undefined);
+  });
+
   test('counts characters the way each reader counts them', () => {
     const r = analyze('hi' + encodeTags('hidden'));
     assert.equal(r.stats.visible, 2);
@@ -238,6 +255,16 @@ describe('does not cry wolf', () => {
     assert.equal(r.verdict.severity, LOW);
     assert.equal(byId(r, 'typographic-punctuation').severity, LOW);
   });
+
+  test('a legitimate internationalised domain is not a homograph', () => {
+    // Japanese IDN: none of its letters have an ASCII twin to imitate.
+    const jp = cp(0x4f8b, 0x3048) + '.' + cp(0x30c6, 0x30b9, 0x30c8);
+    assert.equal(byId(analyze('visit ' + jp + ' today'), 'homograph-url'), undefined);
+  });
+
+  test('a plain ASCII URL is clean', () => {
+    assert.equal(analyze('see https://github.com/jinwovo/secondsight').verdict.severity, -1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -291,7 +318,7 @@ describe('sanitizer', () => {
 
 describe('gallery', () => {
   test('every specimen builds', () => {
-    assert.equal(SPECIMENS.length, 11);
+    assert.equal(SPECIMENS.length, 12);
     for (const s of SPECIMENS) {
       assert.equal(typeof s.build(), 'string', s.id);
       assert.ok(s.why.length > 80, s.id + ' needs an explanation');

@@ -189,6 +189,23 @@ export const SPECIMENS = [
       'npm install ' + cp(0x0440) + 'e' + cp(0x0430) + 'ct-r' + cp(0x043e) + 'uter-d' + cp(0x043e) + 'm\n',
   },
   {
+    id: 'homograph-link',
+    title: 'The link that goes somewhere else',
+    blurb: 'Reads paypal.com. Resolves to xn--pypl-53dc.com.',
+    why:
+      'Two of the letters in this domain are Cyrillic, drawn identically to their Latin ' +
+      'twins. Your eye reads a familiar name; the browser and the DNS resolver read the ' +
+      'punycode it encodes to, which is a different string pointing at a different server. ' +
+      'The address bar can show the pretty version, the certificate can be valid, and the ' +
+      'link still goes nowhere you meant. This is the mechanism behind a whole category of ' +
+      'phishing that survives a careful second look.',
+    reference: 'IDN homograph attack',
+    build: () =>
+      'Your account needs attention.\n' +
+      'Sign in at http://p' + cp(0x0430) + 'yp' + cp(0x0430) + 'l.com/verify to restore access.\n' +
+      'Or manage it from the dashboard at ' + cp(0x0455) + 'ecure-' + cp(0x0430) + 'ccount.com.',
+  },
+  {
     id: 'smart-quotes',
     title: 'The snippet that will not run',
     blurb: 'Nothing hostile. Just a document that helped.',
