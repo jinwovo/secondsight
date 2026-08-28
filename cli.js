@@ -2,9 +2,9 @@
 /**
  * secondsight -- command line
  *
- *   npx github:jinwovo/secondsight README.md
- *   cat suspicious.txt | npx github:jinwovo/secondsight
- *   npx github:jinwovo/secondsight . --fail-on high      # for CI
+ *   npx secondsight README.md
+ *   cat suspicious.txt | npx secondsight
+ *   npx secondsight . --fail-on high      # for CI
  *
  * Same engine as the web page, no network, no dependencies.
  */
@@ -15,7 +15,7 @@ import { analyze, SEVERITY } from './src/detect.js';
 import { sanitize } from './src/sanitize.js';
 import { buildSarif } from './src/sarif.js';
 
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 
 const USAGE = `
 secondsight -- find the text you cannot see
