@@ -1,0 +1,7 @@
+# Keep every text file LF in the repository, on every platform. Line-ending
+# consistency is one of the things secondsight itself reports on -- the tool
+# should not ship a repo that mixes them.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gif binary

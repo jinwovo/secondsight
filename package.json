@@ -1,0 +1,57 @@
+{
+  "name": "secondsight",
+  "version": "1.0.0",
+  "description": "See what the machine sees. A microscope for the invisible characters hiding in text: ASCII smuggling, Trojan Source, zero-width payloads and homoglyphs.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "secondsight": "cli.js"
+  },
+  "exports": {
+    ".": "./src/detect.js",
+    "./detect": "./src/detect.js",
+    "./sanitize": "./src/sanitize.js",
+    "./catalog": "./src/catalog.js",
+    "./decode": "./src/decode.js",
+    "./encode": "./src/encode.js",
+    "./specimens": "./src/specimens.js"
+  },
+  "files": [
+    "cli.js",
+    "src/",
+    "index.html",
+    "assets/"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/test.js",
+    "scan": "node cli.js . --fail-on medium",
+    "selfcheck": "node cli.js src cli.js index.html assets test --fail-on low --all",
+    "serve": "node --run-if-present serve || python -m http.server 8080"
+  },
+  "keywords": [
+    "unicode",
+    "prompt-injection",
+    "ascii-smuggling",
+    "trojan-source",
+    "zero-width",
+    "homoglyph",
+    "steganography",
+    "security",
+    "llm",
+    "ai-agent",
+    "sanitizer",
+    "cve-2021-42574"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jinwovo/secondsight.git"
+  },
+  "homepage": "https://jinwovo.github.io/secondsight/",
+  "bugs": {
+    "url": "https://github.com/jinwovo/secondsight/issues"
+  },
+  "dependencies": {}
+}
