@@ -6,7 +6,11 @@ Paste anything and the screen splits in two: what **you** see, and what the **ma
 
 **[Open it ->](https://jinwovo.github.io/secondsight/)**  |  no install, no upload, no network request after the page loads.
 
-<!-- Add a screenshot/GIF at docs/demo.gif for the social preview -->
+<p align="center">
+  <img src="docs/demo.gif" alt="secondsight decoding hidden Unicode across five real attacks -- Tags-block smuggling, a variation-selector payload in one emoji, a Trojan Source bidi override, a homoglyph install command, and a clean control specimen it correctly leaves alone" width="840">
+</p>
+
+<p align="center"><sub>Five specimens. The same engine decodes each one, shows the two readings, and stays silent on the control.</sub></p>
 
 ---
 
