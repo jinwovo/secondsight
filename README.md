@@ -1,5 +1,6 @@
 # secondsight
 
+[![npm](https://img.shields.io/npm/v/secondsight?color=cb3837&logo=npm)](https://www.npmjs.com/package/secondsight)
 [![ci](https://github.com/jinwovo/secondsight/actions/workflows/ci.yml/badge.svg)](https://github.com/jinwovo/secondsight/actions/workflows/ci.yml)
 [![live demo](https://img.shields.io/badge/demo-jinwovo.github.io-4ec9d9)](https://jinwovo.github.io/secondsight/)
 [![zero dependencies](https://img.shields.io/badge/dependencies-0-3fb950)](https://github.com/jinwovo/secondsight/blob/main/package.json)
@@ -55,17 +56,17 @@ That fourth row is the one that matters most. A scanner that cries wolf on ordin
 
 ```bash
 # scan a repo, decode anything hidden
-npx github:jinwovo/secondsight .
+npx secondsight .
 
 # check a single file, or pipe text in
-npx github:jinwovo/secondsight README.md
-pbpaste | npx github:jinwovo/secondsight
+npx secondsight README.md
+pbpaste | npx secondsight
 
 # strip the hidden characters back out
-npx github:jinwovo/secondsight suspicious.md --fix
+npx secondsight suspicious.md --fix
 
 # machine-readable, for scripts
-npx github:jinwovo/secondsight . --json
+npx secondsight . --json
 ```
 
 **In CI, as a GitHub Action** -- fail a build when someone slips invisible characters into an instruction file, a lockfile, or a commit. One step, nothing to install:
@@ -88,7 +89,7 @@ jobs:
 Or without the Action, on any runner that has Node:
 
 ```yaml
-      - run: npx github:jinwovo/secondsight . --fail-on high
+      - run: npx secondsight . --fail-on high
 ```
 
 `--fail-on` (and the Action's `fail-on`) takes `info`, `low`, `medium`, `high`, or `critical`. The build fails at or above that level.
@@ -114,11 +115,15 @@ jobs:
           sarif_file: secondsight.sarif
 ```
 
-The same output is available straight from the CLI: `npx github:jinwovo/secondsight . --sarif secondsight.sarif`. With `--sarif` the scan succeeds so the upload can run, and GitHub decides how to surface and gate the alerts; add `--fail-on <level>` if you also want the step itself to fail.
+The same output is available straight from the CLI: `npx secondsight . --sarif secondsight.sarif`. With `--sarif` the scan succeeds so the upload can run, and GitHub decides how to surface and gate the alerts; add `--fail-on <level>` if you also want the step itself to fail.
 
 ## As a library
 
 Zero dependencies, ESM, runs anywhere modern JavaScript runs.
+
+```bash
+npm install secondsight
+```
 
 ```js
 import { analyze } from 'secondsight';
