@@ -1,0 +1,29 @@
+name: code-scanning
+
+# Dogfooding the SARIF path: this repo uploads its own secondsight report to
+# GitHub code scanning. A green run here proves the full flow works end to end
+# -- the Action writes SARIF, upload-sarif ingests it, and any finding would
+# appear in the Security tab and inline on the pull request.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jinwovo/secondsight@v1
+        with:
+          paths: '.'
+          sarif: secondsight.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: secondsight.sarif
+          category: secondsight
