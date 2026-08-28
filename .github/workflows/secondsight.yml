@@ -1,0 +1,21 @@
+name: secondsight
+
+# Dogfooding: this repository scans itself with its own published Action.
+# A green check here is a live proof that `uses: jinwovo/secondsight@v1` works
+# for anyone who adds it, and that nothing invisible has crept into this repo.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jinwovo/secondsight@v1
+        with:
+          paths: '.'
+          fail-on: high
