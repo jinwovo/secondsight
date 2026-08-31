@@ -1,5 +1,5 @@
 name: 'secondsight'
-description: 'Fail the build when invisible or hidden Unicode is smuggled into your files -- ASCII smuggling, Trojan Source, zero-width payloads, homoglyphs.'
+description: 'Find and decode the text hiding in your repository: invisible Unicode, Trojan Source, prompt injection styled out of the page, links that go somewhere else. Gates the build, or writes SARIF.'
 author: 'jinwovo'
 
 branding:
@@ -20,7 +20,7 @@ inputs:
     required: false
     default: ''
   args:
-    description: 'Extra arguments passed through to the CLI (for example --json).'
+    description: 'Extra arguments passed through to the CLI, for example --json, or --exclude and --ignore for a corpus of deliberate samples.'
     required: false
     default: ''
 
