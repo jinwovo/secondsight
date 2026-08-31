@@ -20,6 +20,10 @@ import {
   decodeTags, decodeVariationSelectors, decodeZeroWidth,
   findAnsiSequences, readIntent, textScore,
 } from './decode.js';
+import {
+  findStyledHidden, findLoadedComments, findDeceptiveLinks,
+  findExecutableHrefs, findExfilImages, findEncodedInstructions,
+} from './markup.js';
 
 export { SEVERITY, KIND, INFO, LOW, MEDIUM, HIGH, CRITICAL };
 
@@ -44,6 +48,16 @@ const BIDI_CONTROLS = new Set([
   0x2066, 0x2067, 0x2068, 0x2069,
   0x200e, 0x200f, 0x061c,
 ]);
+
+/**
+ * The verdict for a severity, so that a caller which filters findings can
+ * restate the result without inventing its own wording.
+ */
+export function verdictFor(severity) {
+  return severity < 0
+    ? { severity: -1, label: 'CLEAN', line: VERDICTS[0].line }
+    : { severity, label: VERDICTS[severity].label, line: VERDICTS[severity].line };
+}
 
 const VERDICTS = [
   { label: 'CLEAN', line: 'Both readers see the same thing.' },
@@ -385,6 +399,11 @@ function finding(f) {
     count: f.count ?? 0,
     detail: f.detail || '',
     positions: f.positions || [],
+    // Where each occurrence begins and ends, when the finding is about a
+    // region of text rather than a single character. The UI uses it to select
+    // the passage in the input; a finding without spans falls back to the
+    // chip at its offset.
+    spans: f.spans || [],
     decoded: f.decoded ?? null,
     scheme: f.scheme ?? null,
     intents: f.intents || [],
@@ -914,6 +933,169 @@ function analyzeLineEndings(text) {
  * Returns cells for rendering, findings for reporting, and a verdict. Nothing
  * here touches the network or the filesystem.
  */
+// ---------------------------------------------------------------------------
+// Hidden by markup rather than by codepoint
+//
+// Everything above asks what a character is. These ask what a document does
+// with a character that is perfectly ordinary: style it out of the page, seal
+// it in a comment, point a link somewhere other than where its label says, or
+// pack a paragraph into base64. Not one of them needs an unusual codepoint,
+// and every one of them leaves the reader and the model looking at different
+// documents -- which is the only thing this program is actually about.
+// ---------------------------------------------------------------------------
+
+/** Does this decode read as language, or did it merely decode without throwing? */
+const readsAsText = (s, min = 2) => [...s].length >= min && textScore(s) >= 0.85;
+
+const excerpt = (s, n = 400) => (s.length > n ? s.slice(0, n) + ' [...]' : s);
+
+function analyzeStyledHidden(text) {
+  const runs = findStyledHidden(text);
+  if (!runs.length) return [];
+
+  const certain = runs.filter((r) => r.confidence === 'certain');
+  const lead = certain[0] || runs[0];
+  const joined = runs.map((r) => r.text).join('\n');
+  const intents = readIntent(joined);
+
+  return [finding({
+    id: 'styled-hidden-text',
+    title: 'Text that is in the document and not on the page',
+    severity: certain.length ? HIGH : MEDIUM,
+    kind: KIND.MARKUP,
+    count: runs.length,
+    positions: runs.map((r) => r.start),
+    spans: runs.map((r) => [r.start, r.end]),
+    decoded: excerpt(joined, 1200),
+    scheme: lead.how,
+    intents,
+    samples: runs.slice(0, 5).map((r) => '<' + r.tag + '> ' + r.how),
+    reference: 'styled-out content',
+    detail:
+      'A browser applies "' + lead.how + '" and draws nothing. Everything that reads the '
+      + 'document rather than the render -- a scraper, a summariser, an applicant tracking '
+      + 'system, an agent handed the page -- gets the full text. This is the oldest version '
+      + 'of the same trick the Tags block plays, and it needs no unusual characters at all'
+      + (certain.length ? '.' : ', though white text only hides on a white background, which '
+        + 'this cannot verify from the markup alone.'),
+  })];
+}
+
+function analyzeLoadedComments(text) {
+  const comments = findLoadedComments(text, readIntent);
+  if (!comments.length) return [];
+
+  const joined = comments.map((c) => c.text).join('\n');
+  return [finding({
+    id: 'instruction-comment',
+    title: 'An HTML comment addressed to a machine',
+    severity: HIGH,
+    kind: KIND.MARKUP,
+    count: comments.length,
+    positions: comments.map((c) => c.start),
+    spans: comments.map((c) => [c.start, c.end]),
+    decoded: excerpt(joined, 1200),
+    scheme: 'HTML comment',
+    intents: readIntent(joined),
+    reference: 'comment-borne prompt injection',
+    detail:
+      'Comments render nowhere and tokenize like any other text, so a model reading the '
+      + 'source of a page reads them in full. Ordinary comments are not reported here -- '
+      + 'this one is, because what it says reads as an instruction rather than as a note '
+      + 'to another developer.',
+  })];
+}
+
+function analyzeDeceptiveLinks(text) {
+  const out = [];
+  const links = findDeceptiveLinks(text);
+  if (links.length) {
+    out.push(finding({
+      id: 'link-label-mismatch',
+      title: 'A link that names one destination and goes to another',
+      severity: HIGH,
+      kind: KIND.MARKUP,
+      count: links.length,
+      positions: links.map((l) => l.start),
+      spans: links.map((l) => [l.start, l.end]),
+      samples: links.slice(0, 5).map((l) => l.sample),
+      reference: 'label/target mismatch',
+      detail:
+        'The visible label is itself a hostname, and it is not the hostname the link '
+        + 'points at. A label that says "click here" promises nothing; a label that says '
+        + '"' + links[0].label + '" makes a claim about where you are about to go, and here '
+        + 'that claim is false.',
+    }));
+  }
+
+  const executable = findExecutableHrefs(text);
+  if (executable.length) {
+    out.push(finding({
+      id: 'executable-href',
+      title: 'A link whose target is code, not an address',
+      severity: HIGH,
+      kind: KIND.MARKUP,
+      count: executable.length,
+      positions: executable.map((e) => e.start),
+      spans: executable.map((e) => [e.start, e.end]),
+      samples: executable.slice(0, 4).map((e) => e.sample),
+      reference: executable[0].scheme + ': URL',
+      detail:
+        'This target is not a location. It is a payload the client runs or renders in the '
+        + 'page\'s own context the moment the link is followed.',
+    }));
+  }
+
+  const images = findExfilImages(text);
+  if (images.length) {
+    const open = images.filter((i) => i.empty || i.placeholder);
+    out.push(finding({
+      id: 'exfil-image',
+      title: 'An image URL with somewhere to put your data',
+      severity: open.length ? HIGH : MEDIUM,
+      kind: KIND.MARKUP,
+      count: images.length,
+      positions: images.map((i) => i.start),
+      spans: images.map((i) => [i.start, i.end]),
+      samples: images.slice(0, 4).map((i) => i.sample),
+      reference: 'image-based exfiltration',
+      detail:
+        'Images are fetched without anyone clicking anything, which makes an image URL the '
+        + 'standard way a hidden instruction sends its answer back out: the model is told to '
+        + 'fill a value into the query string, and the request carries it to '
+        + images[0].host + '. A remote image is ordinary; a remote image with '
+        + (open.length ? 'an empty slot waiting for a value ' : 'a data-carrying parameter ')
+        + 'is worth reading twice.',
+    }));
+  }
+  return out;
+}
+
+function analyzeEncodedText(text) {
+  const blobs = findEncodedInstructions(text, readIntent, readsAsText);
+  if (!blobs.length) return [];
+
+  const joined = blobs.map((b) => b.decoded).join('\n');
+  return [finding({
+    id: 'encoded-instructions',
+    title: 'Base64 that unpacks into instructions',
+    severity: HIGH,
+    kind: KIND.MARKUP,
+    count: blobs.length,
+    positions: blobs.map((b) => b.start),
+    spans: blobs.map((b) => [b.start, b.end]),
+    decoded: excerpt(joined, 1200),
+    scheme: 'base64',
+    intents: readIntent(joined),
+    samples: blobs.slice(0, 3).map((b) => b.encoded + '...'),
+    reference: 'encoded payload',
+    detail:
+      'Base64 is everywhere and decoding one proves nothing, so runs are only reported when '
+      + 'they turn into readable text that reads as an instruction. This one does. Encoding '
+      + 'it is what kept it out of a keyword search and out of your eye.',
+  })];
+}
+
 export function analyze(text) {
   if (typeof text !== 'string') text = String(text ?? '');
 
@@ -934,6 +1116,10 @@ export function analyze(text) {
     ...urls.findings,
     ...analyzeConfusables(cells, text, urls.spans),
     ...analyzeMisc(cells, text),
+    ...analyzeStyledHidden(text),
+    ...analyzeLoadedComments(text),
+    ...analyzeDeceptiveLinks(text),
+    ...analyzeEncodedText(text),
     ...analyzeSpaces(cells),
     ...analyzeNormalization(text),
     ...analyzeLineEndings(text),

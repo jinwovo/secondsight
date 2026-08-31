@@ -28,5 +28,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: secondsight scans secondsight
-        run: node cli.js src cli.js index.html assets test README.md action.yml --fail-on medium --no-color
+      # Twice: the code has to be spotless, and the two files that are corpora
+      # of deliberate attacks -- the specimen gallery and the test suite --
+      # are scanned with exactly the rules they are meant to trip named here,
+      # in the open, rather than hidden behind an ignore file.
+      - name: secondsight scans its own code
+        run: >-
+          node cli.js src cli.js index.html assets test README.md action.yml
+          --fail-on medium --no-color
+          --exclude src/specimens.js --exclude test/test.js
+      - name: secondsight scans its own attack corpus
+        run: >-
+          node cli.js src/specimens.js test/test.js
+          --fail-on medium --no-color
+          --ignore styled-hidden-text,instruction-comment,encoded-instructions,link-label-mismatch,exfil-image,executable-href

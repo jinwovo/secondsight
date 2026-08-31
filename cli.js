@@ -5,17 +5,21 @@
  *   npx secondsight README.md
  *   cat suspicious.txt | npx secondsight
  *   npx secondsight . --fail-on high      # for CI
+ *   npx secondsight --staged              # for a pre-commit hook
+ *   npx secondsight --compare mine.md leaked.md
  *
  * Same engine as the web page, no network, no dependencies.
  */
 
 import { readFileSync, writeFileSync, statSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join, relative, extname, basename } from 'node:path';
-import { analyze, SEVERITY } from './src/detect.js';
+import { analyze, verdictFor, SEVERITY } from './src/detect.js';
 import { sanitize } from './src/sanitize.js';
 import { buildSarif } from './src/sarif.js';
+import { compare, markSummary } from './src/compare.js';
 
-const VERSION = '1.2.1';
+const VERSION = '1.3.0';
 
 const USAGE = `
 secondsight -- find the text you cannot see
@@ -28,11 +32,20 @@ Options
   --json             machine-readable output
   --sarif [file]     SARIF 2.1.0 for GitHub code scanning (stdout, or to <file>)
   --fix              rewrite files with hidden characters removed
+  --staged           scan only the files staged in git -- for a pre-commit hook
+  --compare <a> <b>  two copies of one document: find the invisible difference
   --fail-on <level>  exit 1 at or above this severity
                      (info|low|medium|high|critical; default: high)
+  --ignore <ids>     comma-separated finding ids to drop (for corpora of
+                     deliberate samples: test fixtures, security write-ups)
+  --exclude <path>   skip a file or directory; repeatable
   --all              report every file, not just the ones with findings
   --no-color         plain output
   -h, --help         this
+
+  --ignore is a command-line flag on purpose. Nothing written inside the text
+  being scanned can silence a finding, because the text being scanned is
+  exactly the thing you do not trust.
 `;
 
 // ---------------------------------------------------------------------------
@@ -40,8 +53,9 @@ Options
 const args = process.argv.slice(2);
 const opts = {
   json: false, sarif: false, sarifPath: null,
-  fix: false, all: false, color: true,
+  fix: false, all: false, color: true, staged: false, compare: false,
   failOn: 3, failOnExplicit: false, paths: [],
+  ignore: new Set(), exclude: [],
 };
 
 for (let i = 0; i < args.length; i++) {
@@ -57,7 +71,16 @@ for (let i = 0; i < args.length; i++) {
       i++;
     }
   } else if (a === '--fix') opts.fix = true;
-  else if (a === '--all') opts.all = true;
+  else if (a === '--staged') opts.staged = true;
+  else if (a === '--compare') opts.compare = true;
+  else if (a === '--ignore') {
+    for (const id of String(args[++i] || '').split(',')) {
+      if (id.trim()) opts.ignore.add(id.trim());
+    }
+  } else if (a === '--exclude') {
+    const p = String(args[++i] || '').trim();
+    if (p) opts.exclude.push(slash(p));
+  } else if (a === '--all') opts.all = true;
   else if (a === '--no-color') opts.color = false;
   else if (a === '--fail-on') {
     const level = String(args[++i] || '').toUpperCase();
@@ -73,6 +96,11 @@ for (let i = 0; i < args.length; i++) {
 
 function existsAsPath(p) {
   try { statSync(p); return true; } catch { return false; }
+}
+
+/** One path spelling, so a Windows backslash and a POSIX slash compare equal. */
+function slash(p) {
+  return String(p).replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
 }
 
 function fail(message) {
@@ -104,18 +132,42 @@ const SKIP_DIRS = new Set([
   '.next', '.venv', '__pycache__', 'coverage',
 ]);
 
+function isReadable(path) {
+  return ALWAYS_READ.has(basename(path)) || TEXT_EXTENSIONS.has(extname(path).toLowerCase());
+}
+
+function isExcluded(path) {
+  const here = slash(relative(process.cwd(), path) || path);
+  const there = slash(path);
+  return opts.exclude.some((p) => here === p || there === p
+    || here.startsWith(p + '/') || there.startsWith(p + '/'));
+}
+
+/**
+ * Drop the findings the caller asked to ignore, and restate the verdict from
+ * what is left. A filtered report has to be honest about its own severity --
+ * silently keeping the old CRITICAL banner over an empty list would be worse
+ * than not filtering at all.
+ */
+function withIgnores(result) {
+  if (!opts.ignore.size) return result;
+  const findings = result.findings.filter((f) => !opts.ignore.has(f.id));
+  if (findings.length === result.findings.length) return result;
+  const worstLeft = findings.length ? Math.max(...findings.map((f) => f.severity)) : -1;
+  return { ...result, findings, verdict: verdictFor(worstLeft) };
+}
+
 function collect(path, out = []) {
   let st;
   try { st = statSync(path); } catch { fail('cannot read ' + path); }
+  if (isExcluded(path)) return out;
   if (st.isDirectory()) {
     if (SKIP_DIRS.has(basename(path))) return out;
     for (const entry of readdirSync(path)) collect(join(path, entry), out);
     return out;
   }
   if (st.size > 8 * 1024 * 1024) return out;
-  if (ALWAYS_READ.has(basename(path)) || TEXT_EXTENSIONS.has(extname(path).toLowerCase())) {
-    out.push(path);
-  }
+  if (isReadable(path)) out.push(path);
   return out;
 }
 
@@ -163,14 +215,129 @@ function reportText(label, result) {
 }
 
 // ---------------------------------------------------------------------------
+// --compare: two copies of one document
+// ---------------------------------------------------------------------------
 
-const targets = opts.paths.flatMap((p) => collect(p));
+function wrapText(text, width, indent) {
+  const lines = [];
+  let line = '';
+  for (const word of text.split(/\s+/)) {
+    if (line && (line + ' ' + word).length > width) { lines.push(line); line = word; }
+    else line = line ? line + ' ' + word : word;
+  }
+  if (line) lines.push(line);
+  return lines.map((l) => indent + l).join('\n');
+}
+
+function runCompare(pathA, pathB) {
+  let a;
+  let b;
+  try { a = readFileSync(pathA, 'utf8'); } catch { fail('cannot read ' + pathA); }
+  try { b = readFileSync(pathB, 'utf8'); } catch { fail('cannot read ' + pathB); }
+
+  const cmp = compare(a, b);
+
+  if (opts.json) {
+    process.stdout.write(JSON.stringify({
+      version: 1,
+      relation: cmp.relation,
+      headline: cmp.headline,
+      detail: cmp.detail,
+      sameVisible: cmp.sameVisible,
+      sameBytes: cmp.sameBytes,
+      differingCodepoints: cmp.differingCodepoints,
+      copies: cmp.copies.map((copy, i) => ({
+        path: i === 0 ? pathA : pathB,
+        hidden: copy.hidden,
+        signature: copy.signature,
+        payloads: copy.payloads.map((p) => ({ id: p.id, decoded: p.decoded })),
+      })),
+      differences: cmp.differences.slice(0, 200).map((d) => ({
+        at: d.at,
+        context: d.context,
+        a: d.a ? d.a.abbrs : [],
+        b: d.b ? d.b.abbrs : [],
+      })),
+    }, null, 2) + '\n');
+    return cmp;
+  }
+
+  const TONE = { empty: '2', identical: '32', marked: '1;31', edited: '33' };
+  process.stdout.write('\n' + bold(pathA) + dim('  vs  ') + bold(pathB) + '\n');
+  process.stdout.write(paint(TONE[cmp.relation], cmp.headline) + '\n');
+  process.stdout.write(dim(wrapText(cmp.detail, 76, '  ')) + '\n');
+
+  for (const copy of cmp.copies) {
+    const where = copy.label === 'A' ? pathA : pathB;
+    process.stdout.write(
+      '\n  ' + bold('copy ' + copy.label) + dim('  ' + where) + '\n'
+      + dim('    ' + copy.hidden + ' hidden character' + (copy.hidden === 1 ? '' : 's'))
+      + (copy.signature ? dim('    fingerprint ') + paint('36', copy.signature) : '') + '\n',
+    );
+    for (const payload of copy.payloads) {
+      process.stdout.write(
+        '    ' + paint('36', 'says: ')
+        + JSON.stringify(payload.decoded.replace(/\s+/g, ' ').slice(0, 160)) + '\n',
+      );
+    }
+  }
+
+  if (cmp.differences.length) {
+    process.stdout.write('\n  ' + bold('where they differ') + '\n');
+    for (const d of cmp.differences.slice(0, 8)) {
+      const context = d.context ? d.context.replace(/\s+/g, ' ').slice(-24) : '';
+      process.stdout.write(
+        dim('    after ' + d.at + ' visible characters')
+        + (context ? dim('  ...' + context) : '') + '\n'
+        + '      A  ' + markSummary(d.a, 10, d.divergeAt) + '\n'
+        + '      B  ' + markSummary(d.b, 10, d.divergeAt) + '\n',
+      );
+    }
+    if (cmp.differences.length > 8) {
+      process.stdout.write(dim('    ... and ' + (cmp.differences.length - 8) + ' more') + '\n');
+    }
+  }
+  process.stdout.write('\n');
+  return cmp;
+}
+
+// ---------------------------------------------------------------------------
+// --staged: the files git is about to commit
+// ---------------------------------------------------------------------------
+
+function stagedFiles() {
+  let out = '';
+  try {
+    out = execFileSync('git', ['diff', '--cached', '--name-only', '--diff-filter=ACM'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    fail('--staged needs to run inside a git repository');
+  }
+  return out.split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((path) => existsAsPath(path) && isReadable(path) && !isExcluded(path));
+}
+
+// ---------------------------------------------------------------------------
+
+if (opts.compare) {
+  if (opts.paths.length !== 2) fail('--compare takes exactly two files');
+  const cmp = runCompare(opts.paths[0], opts.paths[1]);
+  // A watermark difference is a fact about the pair, not about either file on
+  // its own, so it gets its own exit code: 1 when the two copies are separable.
+  process.exit(cmp.relation === 'marked' ? 1 : 0);
+}
+
+const reading = opts.staged || opts.paths.length > 0;
+const targets = opts.staged ? stagedFiles() : opts.paths.flatMap((p) => collect(p));
 const reports = [];
 let worst = -1;
 
-if (!opts.paths.length) {
+if (!reading) {
   const text = readStdin();
-  const result = analyze(text);
+  const result = withIgnores(analyze(text));
   worst = result.verdict.severity;
   reports.push({ path: '<stdin>', result });
   if (!opts.json && !opts.sarif) reportText('<stdin>', result);
@@ -178,7 +345,7 @@ if (!opts.paths.length) {
   for (const path of targets) {
     let text;
     try { text = readFileSync(path, 'utf8'); } catch { continue; }
-    const result = analyze(text);
+    const result = withIgnores(analyze(text));
     worst = Math.max(worst, result.verdict.severity);
     reports.push({ path, result });
     if (!opts.json && !opts.sarif) reportText(relative(process.cwd(), path) || path, result);
@@ -200,7 +367,7 @@ if (!opts.paths.length) {
 if (opts.sarif) {
   const sarif = buildSarif(
     reports.map(({ path, result }) => ({
-      path: opts.paths.length ? relative(process.cwd(), path) || path : path,
+      path: reading ? relative(process.cwd(), path) || path : path,
       result,
     })),
     { version: VERSION },
@@ -235,7 +402,7 @@ if (opts.sarif) {
       })),
     })),
   }, null, 2) + '\n');
-} else if (opts.paths.length) {
+} else if (reading) {
   const flagged = reports.filter((r) => r.result.verdict.severity >= 0).length;
   process.stdout.write('\n' + dim(
     reports.length + ' file' + (reports.length === 1 ? '' : 's') + ' scanned, '

@@ -1,6 +1,6 @@
 {
   "name": "secondsight",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "See what the machine sees. A microscope for the invisible characters hiding in text: ASCII smuggling, Trojan Source, zero-width payloads and homoglyphs.",
   "type": "module",
   "license": "MIT",
@@ -15,7 +15,8 @@
     "./decode": "./src/decode.js",
     "./encode": "./src/encode.js",
     "./sarif": "./src/sarif.js",
-    "./specimens": "./src/specimens.js"
+    "./specimens": "./src/specimens.js",
+    "./compare": "./src/compare.js"
   },
   "files": [
     "cli.js",
@@ -27,8 +28,8 @@
   "scripts": {
     "test": "node --test test/test.js",
     "prepublishOnly": "node --test test/test.js",
-    "scan": "node cli.js . --fail-on medium",
-    "selfcheck": "node cli.js src cli.js index.html assets test action.yml --fail-on low --all",
+    "scan": "node cli.js . --fail-on medium --exclude src/specimens.js",
+    "selfcheck": "node cli.js src cli.js index.html assets test action.yml README.md --fail-on low --all --exclude src/specimens.js --exclude test/test.js && node cli.js src/specimens.js test/test.js --fail-on low --all --ignore styled-hidden-text,instruction-comment,encoded-instructions,link-label-mismatch,exfil-image,executable-href",
     "serve": "node --run-if-present serve || python -m http.server 8080"
   },
   "keywords": [
@@ -43,7 +44,13 @@
     "llm",
     "ai-agent",
     "sanitizer",
-    "cve-2021-42574"
+    "cve-2021-42574",
+    "watermark",
+    "text-fingerprint",
+    "invisible-characters",
+    "ai-security",
+    "pre-commit",
+    "sarif"
   ],
   "repository": {
     "type": "git",

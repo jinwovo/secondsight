@@ -34,6 +34,9 @@ export const KIND = {
   COMBINING: 'combining',
   CONFUSABLE: 'confusable',
   ANSI: 'ansi',
+  // Not a codepoint class at all: text a person cannot read because of how it
+  // is marked up or encoded, rather than because of which character it is.
+  MARKUP: 'markup',
 };
 
 const K = KIND;
