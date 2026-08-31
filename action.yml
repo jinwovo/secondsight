@@ -1,6 +1,13 @@
-name: 'secondsight'
-description: 'Find and decode the text hiding in your repository: invisible Unicode, Trojan Source, prompt injection styled out of the page, links that go somewhere else. Gates the build, or writes SARIF.'
+name: 'secondsight scan'
+description: 'Find and decode what a file is hiding: invisible Unicode, Trojan Source, prompt injection styled out of the page.'
 author: 'jinwovo'
+
+# `name` is the Marketplace listing title and nothing else -- consumers still
+# write `uses: jinwovo/secondsight@v1`, which is resolved from the repository
+# path. It cannot be plain 'secondsight': the Marketplace rejects a name that
+# matches any existing action, user or organization, and github.com/secondsight
+# is an account that has existed since 2013. The description has a hard
+# 125-character limit there, too.
 
 branding:
   icon: 'eye'
