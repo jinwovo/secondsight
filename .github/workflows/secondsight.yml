@@ -15,7 +15,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The gate, over everything that is meant to be clean.
       - uses: jinwovo/secondsight@v1
         with:
           paths: '.'
           fail-on: high
+          args: --exclude src/specimens.js --exclude test/test.js
+
+      # And over the two files that are corpora of deliberate attacks. They are
+      # still scanned -- an invisible character smuggled into either one would
+      # still fail this -- but the rules they exist to trip are named here
+      # rather than hidden in a config nobody reads.
+      - uses: jinwovo/secondsight@v1
+        with:
+          paths: 'src/specimens.js test/test.js'
+          fail-on: high
+          args: --ignore styled-hidden-text,instruction-comment,encoded-instructions,link-label-mismatch,exfil-image,executable-href

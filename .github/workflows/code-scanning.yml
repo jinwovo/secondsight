@@ -23,6 +23,10 @@ jobs:
         with:
           paths: '.'
           sarif: secondsight.sarif
+          # The specimen gallery and the test suite are corpora of deliberate
+          # attacks; alerting on them every run would train everyone to ignore
+          # the Security tab, which is the one thing it must not do.
+          args: --ignore styled-hidden-text,instruction-comment,encoded-instructions,link-label-mismatch,exfil-image,executable-href
       - uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: secondsight.sarif
