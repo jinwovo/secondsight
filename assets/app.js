@@ -8,7 +8,8 @@
 import { analyze, visibleText, humanText, SEVERITY } from '../src/detect.js';
 import { sanitize } from '../src/sanitize.js';
 import { SPECIMENS, specimenById } from '../src/specimens.js';
-import { SCHEMES } from '../src/encode.js';
+import { SCHEMES, encodeZeroWidth } from '../src/encode.js';
+import { compare } from '../src/compare.js';
 import { hex } from '../src/catalog.js';
 
 const $ = (id) => document.getElementById(id);
@@ -27,12 +28,32 @@ const el = {
   lab: $('lab'), labInput: $('lab-input'), labCover: $('lab-cover'),
   labScheme: $('lab-scheme'), labOutput: $('lab-output'),
   labHint: $('lab-hint'), labStats: $('lab-stats'),
+  cmpA: $('cmp-a'), cmpB: $('cmp-b'), cmpOut: $('cmp-out'),
 };
 
 // The machine pane renders one node per codepoint. Past a few thousand that
 // stops being informative and starts being a scroll bar, so it is capped and
 // the cap is stated rather than hidden.
 const RENDER_CAP = 3000;
+
+// A 208-character payload drawn one chip per codepoint is the whole point --
+// seeing the wall is what makes the scale land. Past a few dozen it stops
+// adding anything and becomes a scroll bar, so a long run shows its first
+// RUN_HEAD chips and folds the rest into one chip that opens on click.
+const RUN_COLLAPSE = 64;
+const RUN_HEAD = 48;
+
+// The abbreviations inside a run vary per character (TAG a, TAG b, TAG SP),
+// so listing them says nothing. Name the kind instead, unless the run really
+// is made of one or two characters -- which is exactly the case where the
+// pair of them is the interesting fact.
+const KIND_LABEL = {
+  'tags': 'TAGS',
+  'variation-selector': 'VS',
+  'zero-width': 'ZERO-WIDTH',
+  'private-use': 'PUA',
+  'noncharacter': 'NONCHAR',
+};
 
 let current = analyze('');
 let spectrumCells = [];
@@ -67,6 +88,24 @@ async function copy(text, message) {
 
 const num = (n) => n.toLocaleString('en-US');
 
+// The sticky bar covers the top of the viewport, so "scrolled to" and "visible"
+// are not the same thing. CSS scroll-margin handles where a jump lands; this
+// decides whether to jump at all, because scrolling a page that was already
+// showing the right thing is how a click ends up feeling like it went wrong.
+const NAV_CLEARANCE = 78;
+
+function ensureVisible(node, { force = false } = {}) {
+  const box = node.getBoundingClientRect();
+  const roomBelow = window.innerHeight - NAV_CLEARANCE;
+  const fullyInView = box.top >= NAV_CLEARANCE && box.bottom <= window.innerHeight;
+  const topInView = box.top >= NAV_CLEARANCE && box.top < window.innerHeight - 80;
+  if (!force && (fullyInView || topInView)) return;
+  node.scrollIntoView({
+    block: box.height > roomBelow ? 'start' : 'nearest',
+    behavior: 'smooth',
+  });
+}
+
 // ---------------------------------------------------------------------------
 // The two panes
 // ---------------------------------------------------------------------------
@@ -92,6 +131,38 @@ function chipFor(cell) {
   return chip;
 }
 
+/** One chip standing in for the tail of a long run of hidden characters. */
+function runChipFor(run) {
+  const kind = run[0].info.kind;
+  const abbrs = [...new Set(run.map((c) => c.info.abbr))];
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = 'chip chip--run k-' + kind + (run[0].benign ? ' benign' : '');
+  chip.textContent = (abbrs.length <= 2 ? abbrs.join('/') : KIND_LABEL[kind] || kind.toUpperCase())
+    + ' x' + num(run.length) + ' more';
+  chip.title = num(run.length) + ' more ' + kind + ' characters, folded so this pane stays'
+    + ' readable.\n\nWhat they spell is in the findings below. Click to open the run.';
+  chip.addEventListener('click', () => {
+    const opened = document.createDocumentFragment();
+    for (const cell of run) opened.appendChild(chipFor(cell));
+    chip.replaceWith(opened);
+  });
+  return chip;
+}
+
+/** How far a run of the same kind of hidden character extends from `start`. */
+function runEnd(cells, start, limit) {
+  const first = cells[start];
+  let end = start;
+  while (
+    end < limit
+    && cells[end].info
+    && cells[end].info.kind === first.info.kind
+    && cells[end].benign === first.benign
+  ) end++;
+  return end;
+}
+
 function renderMachine(result) {
   const frag = document.createDocumentFragment();
   const cells = result.cells;
@@ -106,6 +177,16 @@ function renderMachine(result) {
     const cell = cells[i];
     if (cell.info) {
       flush();
+      // A newline is structure, not a payload, so runs of them are never folded.
+      if (cell.info.kind !== 'linebreak') {
+        const end = runEnd(cells, i, limit);
+        if (end - i >= RUN_COLLAPSE) {
+          for (let k = i; k < i + RUN_HEAD; k++) frag.appendChild(chipFor(cells[k]));
+          frag.appendChild(runChipFor(cells.slice(i + RUN_HEAD, end)));
+          i = end - 1;
+          continue;
+        }
+      }
       frag.appendChild(chipFor(cell));
       if (cell.info.kind === 'linebreak') frag.appendChild(document.createTextNode('\n'));
     } else if (cell.confusable) {
@@ -302,7 +383,10 @@ function renderFindings(result) {
     if (f.count > 1) {
       const count = document.createElement('span');
       count.className = 'finding-count';
-      count.textContent = num(f.count) + ' characters';
+      // A markup finding counts passages, not codepoints. Calling two hidden
+      // paragraphs "2 characters" would be a small lie in a tool whose only
+      // claim is that it tells you exactly what is there.
+      count.textContent = num(f.count) + (f.kind === 'markup' ? ' places' : ' characters');
       head.appendChild(count);
     }
     card.appendChild(head);
@@ -364,18 +448,30 @@ function renderFindings(result) {
       card.appendChild(ref);
     }
 
-    if (f.positions.length) {
+    // Clicking a finding should show you the thing it found. For a single
+    // hidden character that means its chip; for a passage that is hidden by
+    // how it is marked up, no chip exists, so the passage is selected in the
+    // input instead -- which is where it actually is.
+    if (f.positions.length || f.spans.length) {
       card.style.cursor = 'pointer';
-      card.title = 'Jump to the first one';
+      card.title = f.spans.length ? 'Select it in the input' : 'Jump to the first one';
       card.addEventListener('click', () => {
-        const target = el.machine.querySelector('[data-offset="' + f.positions[0] + '"]');
-        if (target) {
-          target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-          target.animate(
+        const chip = f.positions.length
+          ? el.machine.querySelector('[data-offset="' + f.positions[0] + '"]')
+          : null;
+        if (chip) {
+          chip.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          chip.animate(
             [{ outline: '2px solid var(--accent)' }, { outline: '2px solid transparent' }],
             { duration: 1300 },
           );
+          return;
         }
+        const [start, end] = f.spans[0] || [];
+        if (start === undefined) return;
+        el.input.focus({ preventScroll: true });
+        el.input.setSelectionRange(start, end);
+        ensureVisible(el.inputBlock, { force: true });
       });
     }
 
@@ -405,9 +501,18 @@ function cleaned() {
 function updateCleanSummary() {
   if (el.actions.hidden) return;
   const result = cleaned();
-  el.cleanSummary.textContent = result.changes.length
-    ? result.changes.map((c) => c.label + (c.count > 1 ? ' x' + c.count : '')).slice(0, 3).join(', ')
-      + (result.changes.length > 3 ? ', +' + (result.changes.length - 3) + ' more' : '')
+  if (result.changes.length) {
+    el.cleanSummary.textContent =
+      result.changes.map((c) => c.label + (c.count > 1 ? ' x' + c.count : '')).slice(0, 3).join(', ')
+      + (result.changes.length > 3 ? ', +' + (result.changes.length - 3) + ' more' : '');
+    return;
+  }
+  // Some findings are not made of characters at all. Offering to strip
+  // characters that are not there would be a button that lies.
+  const markupOnly = current.findings.length
+    && current.findings.every((f) => f.kind === 'markup');
+  el.cleanSummary.textContent = markupOnly
+    ? 'these findings are in the markup, not the characters -- removing characters cannot fix them'
     : 'nothing to change with these options';
 }
 
@@ -487,12 +592,20 @@ function setInput(text, { markSpecimen = null } = {}) {
 // Gallery
 // ---------------------------------------------------------------------------
 
+// The gallery sits between the input and the analysis, so it has to earn its
+// height. Two rows are enough to show the range and the control; the rest are
+// one click away rather than a screen of scrolling for everyone.
+const SPECIMENS_SHOWN = 7;
+
 function renderGallery() {
+  const upFront = new Set([...SPECIMENS.slice(0, SPECIMENS_SHOWN).map((s) => s.id), 'clean']);
   const frag = document.createDocumentFragment();
   for (const s of SPECIMENS) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'specimen' + (s.id === 'clean' ? ' control' : '');
+    button.className = 'specimen'
+      + (s.id === 'clean' ? ' control' : '')
+      + (upFront.has(s.id) ? '' : ' specimen--extra');
     button.dataset.id = s.id;
     button.setAttribute('aria-pressed', 'false');
 
@@ -509,11 +622,26 @@ function renderGallery() {
       setInput(s.build(), { markSpecimen: s.id });
       history.replaceState(null, '', '#' + s.id);
       showWhy(s);
-      el.input.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      // The input sits directly above this row, so it is usually already on
+      // screen. Only scroll when it genuinely is not.
+      ensureVisible(el.inputBlock);
     });
     frag.appendChild(button);
   }
   el.specimens.replaceChildren(frag);
+
+  const hidden = SPECIMENS.length - [...el.specimens.children]
+    .filter((b) => !b.classList.contains('specimen--extra')).length;
+  if (!hidden) return;
+
+  const more = $('specimens-more');
+  more.hidden = false;
+  more.textContent = 'Show ' + hidden + ' more';
+  more.addEventListener('click', () => {
+    const open = el.specimens.classList.toggle('all');
+    more.textContent = open ? 'Show fewer' : 'Show ' + hidden + ' more';
+    more.setAttribute('aria-expanded', String(open));
+  });
 }
 
 function showWhy(specimen) {
@@ -576,6 +704,186 @@ function updateLab() {
 }
 
 // ---------------------------------------------------------------------------
+// Compare two copies
+// ---------------------------------------------------------------------------
+
+// Twelve marks is about as many as fit on one line at this size, and the
+// window opens two before the divergence so the last matching pair is visible
+// next to the first mismatched one. A difference you have to take on trust is
+// not much better than no difference at all.
+const MARK_WINDOW = 12;
+
+const DEMO_MEMO = 'CONFIDENTIAL -- Board summary, Q3\n\n'
+  + 'Headcount plan approved as circulated. Do not forward.';
+
+function markRow(label, mark, other, from) {
+  const row = document.createElement('div');
+  row.className = 'cmp-row';
+
+  const tag = document.createElement('span');
+  tag.className = 'cmp-tag';
+  tag.textContent = label;
+  row.appendChild(tag);
+
+  if (!mark) {
+    const none = document.createElement('span');
+    none.className = 'cmp-mark absent';
+    none.textContent = 'nothing here';
+    row.appendChild(none);
+    return row;
+  }
+
+  const start = Math.max(0, Math.min(from - 2, mark.abbrs.length - MARK_WINDOW));
+  const end = Math.min(mark.abbrs.length, start + MARK_WINDOW);
+
+  if (start > 0) {
+    const lead = document.createElement('span');
+    lead.className = 'cmp-ell';
+    lead.textContent = '...';
+    row.appendChild(lead);
+  }
+  for (let i = start; i < end; i++) {
+    const badge = document.createElement('span');
+    const matches = other && other.cps[i] === mark.cps[i];
+    badge.className = 'cmp-mark ' + (matches ? 'same' : 'differs');
+    badge.textContent = mark.abbrs[i];
+    row.appendChild(badge);
+  }
+  const tail = document.createElement('span');
+  tail.className = 'cmp-ell';
+  tail.textContent = (end < mark.abbrs.length ? '... ' : '') + '[' + mark.abbrs.length + ']';
+  row.appendChild(tail);
+  return row;
+}
+
+function copyCard(copy) {
+  const card = document.createElement('article');
+  card.className = 'cmp-copy';
+
+  const head = document.createElement('div');
+  head.className = 'cmp-copy-head';
+  const tag = document.createElement('span');
+  tag.className = 'cmp-tag';
+  tag.textContent = 'COPY ' + copy.label;
+  head.appendChild(tag);
+  if (copy.signature) {
+    const fp = document.createElement('span');
+    fp.className = 'cmp-fp';
+    fp.textContent = copy.signature;
+    fp.title = 'A short id for this copy\'s invisible marks. Same id, same marks.';
+    head.appendChild(fp);
+  }
+  card.appendChild(head);
+
+  const stat = document.createElement('div');
+  stat.className = 'cmp-copy-stat';
+  stat.textContent = copy.text
+    ? num(copy.hidden) + ' hidden character' + (copy.hidden === 1 ? '' : 's')
+      + '  |  ' + num([...copy.visible].length) + ' visible'
+    : 'empty';
+  card.appendChild(stat);
+
+  for (const payload of copy.payloads) {
+    const box = document.createElement('div');
+    box.className = 'decoded';
+    const label = document.createElement('div');
+    label.className = 'decoded-label';
+    label.textContent = 'what this copy carries';
+    const pre = document.createElement('pre');
+    pre.textContent = payload.decoded;
+    box.append(label, pre);
+    card.appendChild(box);
+  }
+
+  if (copy.text) {
+    const row = document.createElement('div');
+    row.className = 'action-row';
+    row.style.marginTop = '12px';
+    const send = document.createElement('button');
+    send.type = 'button';
+    send.className = 'ubtn';
+    send.textContent = 'Open copy ' + copy.label + ' above';
+    send.addEventListener('click', () => {
+      setInput(copy.text);
+      ensureVisible(el.inputBlock, { force: true });
+    });
+    row.appendChild(send);
+    card.appendChild(row);
+  }
+  return card;
+}
+
+function renderCompare() {
+  const a = el.cmpA.value;
+  const b = el.cmpB.value;
+  if (!a && !b) { el.cmpOut.replaceChildren(); return; }
+
+  const cmp = compare(a, b);
+  const frag = document.createDocumentFragment();
+
+  const verdict = document.createElement('div');
+  verdict.className = 'cmp-verdict';
+  verdict.dataset.relation = cmp.relation;
+  const headline = document.createElement('div');
+  headline.className = 'cmp-headline';
+  headline.textContent = cmp.headline;
+  const detail = document.createElement('p');
+  detail.className = 'cmp-detail';
+  detail.textContent = cmp.detail;
+  verdict.append(headline, detail);
+  frag.appendChild(verdict);
+
+  const copies = document.createElement('div');
+  copies.className = 'cmp-copies';
+  for (const copy of cmp.copies) copies.appendChild(copyCard(copy));
+  frag.appendChild(copies);
+
+  if (cmp.differences.length) {
+    const list = document.createElement('div');
+    list.className = 'cmp-diffs';
+    for (const d of cmp.differences.slice(0, 6)) {
+      const box = document.createElement('div');
+      box.className = 'cmp-diff';
+      const where = document.createElement('div');
+      where.className = 'cmp-diff-where';
+      where.textContent = 'after ' + num(d.at) + ' visible characters';
+      if (d.context.trim()) {
+        const quote = document.createElement('b');
+        quote.textContent = '  ...' + d.context.replace(/\s+/g, ' ').slice(-26);
+        where.appendChild(quote);
+      }
+      box.appendChild(where);
+      box.appendChild(markRow('A', d.a, d.b, d.divergeAt));
+      box.appendChild(markRow('B', d.b, d.a, d.divergeAt));
+      list.appendChild(box);
+    }
+    if (cmp.differences.length > 6) {
+      const more = document.createElement('div');
+      more.className = 'cmp-diff-where';
+      more.textContent = 'and ' + num(cmp.differences.length - 6) + ' more positions.';
+      list.appendChild(more);
+    }
+    frag.appendChild(list);
+  }
+
+  el.cmpOut.replaceChildren(frag);
+}
+
+let comparePending = null;
+function scheduleCompare() {
+  clearTimeout(comparePending);
+  comparePending = setTimeout(renderCompare, 140);
+}
+
+function loadCompareDemo({ quiet = false } = {}) {
+  const marked = (who) => DEMO_MEMO.replace('approved as', 'approved as' + encodeZeroWidth(who));
+  el.cmpA.value = marked('recipient=j.kown;copy=0447');
+  el.cmpB.value = marked('recipient=a.park;copy=0912');
+  renderCompare();
+  if (!quiet) toast('two copies loaded -- they read identically');
+}
+
+// ---------------------------------------------------------------------------
 // Explainer cards
 // ---------------------------------------------------------------------------
 
@@ -589,6 +897,10 @@ const EXPLAINERS = [
   ['ANSI escapes', 'A terminal is a renderer, and renderers can be told to lie. Cursor moves rewrite printed lines.', 'CSI and OSC sequences'],
   ['Noncharacters and PUA', 'Codepoints with no assigned meaning. Parsers disagree about them, which is the point.', 'U+FDD0-U+FDEF, U+E000-U+F8FF'],
   ['Normalisation drift', 'Text that changes when normalised can pass validation in one form and take effect in another.', 'NFC / NFKC'],
+  ['Styled-out text', 'display:none, font-size:0, white on white. Not one unusual character, and the page still says two things.', 'inline style, HTML comment'],
+  ['Deceptive links', 'A label that names a hostname is a claim about where you are going. Sometimes the target disagrees.', 'label vs. href'],
+  ['Image exfiltration', 'Images are fetched with nobody clicking anything, so a query parameter is a way out for an answer.', 'query-string carriers'],
+  ['Encoded payloads', 'Base64 survives every keyword search, because none of the keywords are there. Reported only when it decodes to an instruction.', 'base64'],
 ];
 
 function renderExplain() {
@@ -657,7 +969,54 @@ el.labScheme.addEventListener('change', updateLab);
 $('lab-copy').addEventListener('click', () => copy(el.labOutput.value, 'copied -- most of it is invisible'));
 $('lab-send').addEventListener('click', () => {
   setInput(el.labOutput.value);
-  el.input.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  ensureVisible(el.inputBlock, { force: true });
+});
+
+// The hero button promises the input box, not the top edge of a section that
+// happens to contain one. Land on the block, then focus without a second jump.
+for (const link of document.querySelectorAll('[data-scroll]')) {
+  link.addEventListener('click', (e) => {
+    e.preventDefault();
+    const target = $(link.dataset.scroll);
+    if (!target) return;
+    history.replaceState(null, '', '#' + link.dataset.scroll);
+    // Focus first: taking focus mid-animation cuts a smooth scroll short, and
+    // the reader ends up a few pixels from where they started.
+    el.input.focus({ preventScroll: true });
+    target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  });
+}
+
+// Compare ----------------------------------------------------------------
+
+el.cmpA.addEventListener('input', scheduleCompare);
+el.cmpB.addEventListener('input', scheduleCompare);
+$('cmp-demo').addEventListener('click', () => loadCompareDemo());
+
+// Comparing two documents usually means comparing two files, so each side
+// takes a drop of its own. Same rule as the analyser: the file is read here.
+for (const [box, label] of [[el.cmpA, 'A'], [el.cmpB, 'B']]) {
+  box.addEventListener('dragover', (e) => e.preventDefault());
+  box.addEventListener('drop', async (e) => {
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+    e.preventDefault();
+    if (file.size > 4 * 1024 * 1024) { toast('file is too large -- 4 MB limit'); return; }
+    box.value = await file.text();
+    renderCompare();
+    toast('copy ' + label + ': ' + file.name + ' -- it never left this tab');
+  });
+}
+$('cmp-swap').addEventListener('click', () => {
+  const held = el.cmpA.value;
+  el.cmpA.value = el.cmpB.value;
+  el.cmpB.value = held;
+  renderCompare();
+});
+$('cmp-clear').addEventListener('click', () => {
+  el.cmpA.value = '';
+  el.cmpB.value = '';
+  renderCompare();
 });
 
 // File drop -------------------------------------------------------------
@@ -704,6 +1063,9 @@ window.addEventListener('resize', () => renderSpectrum(current));
 renderGallery();
 renderExplain();
 renderLab();
+// The comparison starts full for the same reason the analyser does: two empty
+// boxes explain nothing, and this one has to be seen working to be understood.
+loadCompareDemo({ quiet: true });
 
 const fromHash = specimenById(location.hash.slice(1));
 if (fromHash) {

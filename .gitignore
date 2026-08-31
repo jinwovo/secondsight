@@ -4,3 +4,7 @@ node_modules/
 Thumbs.db
 .idea/
 .vscode/
+
+# local design references (not part of the site)
+apple-demo.html
+apple-design.css
