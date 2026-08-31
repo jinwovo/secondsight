@@ -78,14 +78,6 @@
         <div class="dropzone" id="dropzone"><span>release to read the file</span></div>
       </div>
 
-      <!-- SPECIMENS -- deliberately under the box, the way a search field
-           offers examples: the input is the thing, these are a way in. -->
-      <section class="specimen-block" aria-labelledby="gallery-title" style="margin-top:22px">
-        <h2 id="gallery-title" class="section-label">Or load a specimen <span class="hint">real attacks, built in front of you -- click one</span></h2>
-        <div class="specimen-row" id="specimens"></div>
-        <button type="button" id="specimens-more" class="ubtn specimens-more" aria-expanded="false" hidden></button>
-      </section>
-
       <section class="spectrum-block" aria-labelledby="spectrum-title" style="margin-top:26px">
         <h2 id="spectrum-title" class="section-label">Spectrum <span class="hint" id="spectrum-hint">every codepoint, in order</span></h2>
         <canvas id="spectrum" height="54"></canvas>
@@ -125,6 +117,14 @@
           <button type="button" id="report" class="ubtn">Download report</button>
           <span class="hint" id="clean-summary"></span>
         </div>
+      </section>
+
+      <!-- SPECIMENS -- after the result, not before it. The page arrives with
+           one already loaded, so this is not the way in; it is the way on. -->
+      <section class="specimen-block" aria-labelledby="gallery-title" style="margin-top:26px">
+        <h2 id="gallery-title" class="section-label">More specimens <span class="hint">real attacks, built in front of you -- click one</span></h2>
+        <div class="specimen-row" id="specimens"></div>
+        <button type="button" id="specimens-more" class="ubtn specimens-more" aria-expanded="false" hidden></button>
       </section>
 
     </div>

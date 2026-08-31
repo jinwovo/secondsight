@@ -16,6 +16,7 @@ const $ = (id) => document.getElementById(id);
 
 const el = {
   input: $('input'), inputBlock: document.querySelector('.input-block'),
+  panes: document.querySelector('.panes'),
   dropzone: $('dropzone'),
   specimens: $('specimens'),
   spectrum: $('spectrum'), spectrumReadout: $('spectrum-readout'), spectrumHint: $('spectrum-hint'),
@@ -94,16 +95,28 @@ const num = (n) => n.toLocaleString('en-US');
 // showing the right thing is how a click ends up feeling like it went wrong.
 const NAV_CLEARANCE = 78;
 
+const stillness = () =>
+  (window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth');
+
+/**
+ * Put `node` under the bar, and only when it is not already readable.
+ *
+ * The offset is computed here rather than left to scrollIntoView's `block`
+ * modes, because "nearest" and "start" disagree about what to do with an
+ * element taller than the viewport, and the answer that matters -- its top,
+ * clear of the sticky bar -- is one subtraction.
+ */
+function scrollTo(node) {
+  const top = node.getBoundingClientRect().top + window.scrollY - NAV_CLEARANCE;
+  window.scrollTo({ top: Math.max(0, Math.round(top)), behavior: stillness() });
+}
+
 function ensureVisible(node, { force = false } = {}) {
   const box = node.getBoundingClientRect();
-  const roomBelow = window.innerHeight - NAV_CLEARANCE;
   const fullyInView = box.top >= NAV_CLEARANCE && box.bottom <= window.innerHeight;
   const topInView = box.top >= NAV_CLEARANCE && box.top < window.innerHeight - 80;
   if (!force && (fullyInView || topInView)) return;
-  node.scrollIntoView({
-    block: box.height > roomBelow ? 'start' : 'nearest',
-    behavior: 'smooth',
-  });
+  scrollTo(node);
 }
 
 // ---------------------------------------------------------------------------
@@ -460,7 +473,7 @@ function renderFindings(result) {
           ? el.machine.querySelector('[data-offset="' + f.positions[0] + '"]')
           : null;
         if (chip) {
-          chip.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          ensureVisible(chip);
           chip.animate(
             [{ outline: '2px solid var(--accent)' }, { outline: '2px solid transparent' }],
             { duration: 1300 },
@@ -622,9 +635,11 @@ function renderGallery() {
       setInput(s.build(), { markSpecimen: s.id });
       history.replaceState(null, '', '#' + s.id);
       showWhy(s);
-      // The input sits directly above this row, so it is usually already on
-      // screen. Only scroll when it genuinely is not.
-      ensureVisible(el.inputBlock);
+      // The gallery sits below the result, so the thing that just changed is
+      // above the click. Land on the two readings rather than on the input:
+      // the input's text is already in the left pane, and the comparison is
+      // what the click was asking to see.
+      ensureVisible(el.panes, { force: true });
     });
     frag.appendChild(button);
   }
@@ -983,7 +998,7 @@ for (const link of document.querySelectorAll('[data-scroll]')) {
     // Focus first: taking focus mid-animation cuts a smooth scroll short, and
     // the reader ends up a few pixels from where they started.
     el.input.focus({ preventScroll: true });
-    target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    scrollTo(target);
   });
 }
 
