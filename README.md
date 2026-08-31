@@ -13,10 +13,10 @@ Paste anything and the screen splits in two: what **you** see, and what the **ma
 **[Open it ->](https://jinwovo.github.io/secondsight/)**  |  no install, no upload, no network request after the page loads.
 
 <p align="center">
-  <img src="docs/demo.gif" alt="secondsight decoding hidden Unicode across five real attacks -- Tags-block smuggling, a variation-selector payload in one emoji, a Trojan Source bidi override, a homoglyph install command, and a clean control specimen it correctly leaves alone" width="840">
+  <img src="https://raw.githubusercontent.com/jinwovo/secondsight/main/docs/demo.gif" alt="secondsight taking apart seven specimens in turn: a Tags-block payload hidden in a pull request comment, a paragraph carried by variation selectors on one emoji, a Trojan Source bidi override, an application page with instructions styled out of the render, a link whose label promises github.com, a homograph domain resolving to punycode, and a clean control specimen it correctly leaves alone" width="860">
 </p>
 
-<p align="center"><sub>Five specimens. The same engine decodes each one, shows the two readings, and stays silent on the control.</sub></p>
+<p align="center"><sub>Seven specimens, one engine. It decodes each one, shows both readings, and stays silent on the control.</sub></p>
 
 ---
 
@@ -111,7 +111,11 @@ Same to you. Not the same to a machine.
       B  ... ZWNJ ZWSP ZWSP ZWSP ZWSP ZWNJ ZWSP ZWSP ZWNJ ZWSP ...  [208]
 ```
 
-It exits `1` when the two copies are separable, so a pipeline can gate on it. The same comparison runs [in the browser](https://jinwovo.github.io/secondsight/#compare), side by side, on documents you would never upload anywhere.
+It exits `1` when the two copies are separable, so a pipeline can gate on it. The same comparison runs [in the browser](https://jinwovo.github.io/secondsight/#compare), side by side, on documents you would never upload anywhere:
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/jinwovo/secondsight/main/docs/compare.png" alt="The comparison panel: two copies of a board memo that read identically, each with its own fingerprint, the payload each one carries decoded in full, and the run of zero-width marks aligned so the position where the two copies diverge is highlighted" width="860">
+</p>
 
 ## Three ways to use it
 
