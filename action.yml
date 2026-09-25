@@ -40,9 +40,21 @@ runs:
       # directory and scans the caller's checked-out repository. With `sarif`
       # set it writes a report and succeeds so the upload step can run; without
       # it, the action is a pass/fail gate on the given severity.
-      run: >-
-        if [ -n "${{ inputs.sarif }}" ]; then
-          node "$GITHUB_ACTION_PATH/cli.js" ${{ inputs.paths }} --sarif "${{ inputs.sarif }}" ${{ inputs.args }};
+      #
+      # Inputs arrive through the environment, never through `${{ }}` in the
+      # script body: an expression is pasted into the shell source before bash
+      # parses it, so an input holding `$(...)` would run as a command. An
+      # unquoted variable is only split into words, and `set -f` stops those
+      # words from being expanded as globs.
+      env:
+        SS_PATHS: ${{ inputs.paths }}
+        SS_FAIL_ON: ${{ inputs.fail-on }}
+        SS_SARIF: ${{ inputs.sarif }}
+        SS_ARGS: ${{ inputs.args }}
+      run: |
+        set -f
+        if [ -n "$SS_SARIF" ]; then
+          node "$GITHUB_ACTION_PATH/cli.js" $SS_PATHS --sarif "$SS_SARIF" $SS_ARGS
         else
-          node "$GITHUB_ACTION_PATH/cli.js" ${{ inputs.paths }} --fail-on ${{ inputs.fail-on }} --no-color ${{ inputs.args }};
+          node "$GITHUB_ACTION_PATH/cli.js" $SS_PATHS --fail-on "$SS_FAIL_ON" --no-color $SS_ARGS
         fi
