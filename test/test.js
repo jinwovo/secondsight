@@ -449,6 +449,52 @@ describe('hidden by markup, not by codepoint', () => {
     }
   });
 
+  test('a rule in the page\'s own stylesheet hides as well as an inline style', () => {
+    const r = analyze('<style>.note{display:none}</style>\n<p class="lead note">' + INJECTION + '</p>');
+    const f = byId(r, 'styled-hidden-text');
+    assert.ok(f, 'a class-based rule went undetected');
+    assert.match(f.samples[0], /display:none via \.note/, 'the report names the rule');
+
+    const byIdRule = analyze('<style>@media screen { #x { opacity: 0 !important } }</style><div id="x">' + INJECTION + '</div>');
+    assert.ok(byId(byIdRule, 'styled-hidden-text'), 'an id rule inside a screen media query');
+  });
+
+  test('rules that hide nothing on screen, or only in some state, are not a hiding', () => {
+    for (const css of ['@media print { .n { display:none } }', '.n:hover { display:none }',
+      '.n::before { display:none }', '@keyframes n { from { opacity:0 } }', '.n { display:flex }']) {
+      const r = analyze('<style>' + css + '</style><p class="n">' + INJECTION + '</p>');
+      assert.equal(byId(r, 'styled-hidden-text'), undefined, css + ' was reported');
+    }
+  });
+
+  test('the ways around a naive pattern are closed', () => {
+    const backslash = String.fromCharCode(92);
+    const variants = {
+      'nested same-name tag': '<div style="display:none"><div></div>' + INJECTION + '</div>',
+      'single-quoted style': "<span style='opacity:0'>" + INJECTION + '</span>',
+      '!important': '<span style="font-size:0 !important">' + INJECTION + '</span>',
+      'character reference': '<p style="display&#58;none">' + INJECTION + '</p>',
+      'CSS comment': '<style>.n{display:/**/none}</style><p class="n">' + INJECTION + '</p>',
+      'CSS escape': '<style>.n{displ' + backslash + '61 y:none}</style><p class="n">' + INJECTION + '</p>',
+    };
+    for (const [name, html] of Object.entries(variants)) {
+      assert.ok(byId(analyze(html), 'styled-hidden-text'), name + ' slipped through');
+    }
+  });
+
+  test('a property is not matched inside a longer one', () => {
+    const prose = 'We shipped the new importer today. It reads every format the old one did.';
+    for (const style of ['background-color:#fff', 'line-height:0;overflow:hidden', 'border-color:white']) {
+      const r = analyze('<div style="' + style + '">' + prose + '</div>');
+      assert.equal(byId(r, 'styled-hidden-text'), undefined, style + ' is not hiding anything');
+    }
+  });
+
+  test('a hidden child of a hidden parent is one finding, not two', () => {
+    const r = analyze('<div style="display:none"><p style="display:none">' + INJECTION + '</p></div>');
+    assert.equal(byId(r, 'styled-hidden-text').count, 1);
+  });
+
   test('a comment is only reported when it reads as an instruction', () => {
     const note = analyze('<!-- TODO: rename this once the migration lands, see ticket 4412. -->');
     assert.equal(byId(note, 'instruction-comment'), undefined, 'an ordinary comment is a comment');

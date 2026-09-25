@@ -76,7 +76,7 @@ application.html  CRITICAL
 
 Each of these is held to the same no-crying-wolf standard as the rest of the engine, and each rule states where it stops:
 
-- **Styled-out text** -- `display:none`, `visibility:hidden`, `font-size:0`, `opacity:0`, off-screen positioning, white-on-white. Reported only when the hidden content reads as *prose*, because hiding part of an interface is ordinary; the `hidden` attribute is deliberately not a trigger at all.
+- **Styled-out text** -- `display:none`, `visibility:hidden`, `font-size:0`, `opacity:0`, off-screen positioning, white-on-white -- set inline or by a rule in the page's own `<style>` block, and the finding names the rule (`display:none via .note`). CSS is read the way a browser reads it, so comments, CSS escapes and character references do not get a payload past it. Reported only when the hidden content reads as *prose*, because hiding part of an interface is ordinary; the `hidden` attribute is deliberately not a trigger at all.
 - **HTML comments** -- reported only when the comment reads as an instruction. An ordinary TODO is an ordinary TODO.
 - **Base64** -- reported only when a run decodes to readable text *and* that text reads as an instruction. Every lockfile on earth is full of base64; flagging all of it is the same as flagging none of it.
 - **Deceptive links** -- a label that is itself a hostname, pointing at a different registrable domain. `[README.md](...)` is a filename, not a claim, even though `.md` is a real TLD.
@@ -281,13 +281,13 @@ Tags block | variation-selector payloads | zero-width steganography (decoded acr
 - **Intent-reading is a heuristic.** When a decoded payload looks like an instruction rather than a serial number, that is pattern matching, and it is labelled as such in the output. It raises a finding's severity; it never invents one.
 - **Zero-width steganography has no single standard.** Known encodings are decoded; anything else is reported as *present but not decoded*, because a confident wrong answer is worse than an honest gap.
 - **Homoglyph coverage is the common attack set, not all of Unicode.** Mixed-script detection needs no table and catches the general case; the named lookalike table covers the scripts actually used for spoofing.
-- **The markup scan is shallow on purpose.** Inline styles, the `style` attribute and comments are read; stylesheets, class-based rules and nested same-name tags are not. That is where injected content actually lives, and claiming to parse CSS this does not parse would be worse than saying plainly where it stops.
+- **The markup scan reads the page, not the web.** Inline styles, the document's own `<style>` blocks and comments are read, with nesting counted. Linked stylesheets are never fetched -- nothing here makes a network request -- and a rule is only matched by tag, class and id: selectors that depend on state (`:hover`, `:not()`, attribute selectors) or on tree shape beyond the element itself are not resolved. Claiming to apply CSS this does not apply would be worse than saying plainly where it stops.
 - **Statistical watermarks are out of reach, and it says so.** The watermark Claude adds to its text (a SynthID-Text scheme) lives in word choice, not in characters. No character tool can see or strip it, and secondsight reports "nothing hidden here" rather than pretending otherwise.
 
 ## Development
 
 ```bash
-node --test test/test.js     # 83 tests, zero dependencies
+node --test test/test.js     # 88 tests, zero dependencies
 npm run selfcheck            # the tool scans its own source and finds it clean
 python -m http.server 8080   # then open http://localhost:8080
 ```

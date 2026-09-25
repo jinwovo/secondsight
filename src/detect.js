@@ -969,7 +969,7 @@ function analyzeStyledHidden(text) {
     decoded: excerpt(joined, 1200),
     scheme: lead.how,
     intents,
-    samples: runs.slice(0, 5).map((r) => '<' + r.tag + '> ' + r.how),
+    samples: runs.slice(0, 5).map((r) => '<' + r.tag + '> ' + r.how + (r.via ? ' via ' + r.via : '')),
     reference: 'styled-out content',
     detail:
       'A browser applies "' + lead.how + '" and draws nothing. Everything that reads the '

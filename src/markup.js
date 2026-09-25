@@ -35,21 +35,77 @@
  * text, on the other hand, only hides on a white background -- true almost
  * always, but not something this file can actually verify, and a scanner that
  * states more than it knows is a scanner that gets ignored.
+ *
+ * Each pattern runs against a normalised declaration block (see cssText), and
+ * every property is anchored to the start of a declaration: `color` must not
+ * match `background-color`, and `height` must not match `line-height`. A value
+ * may carry `!important`, which only makes the hiding more deliberate.
  */
+const DECL = '(?:^|;)\\s*';
+const END = '\\s*(?:!\\s*important\\s*)?(?:;|$)';
 const HIDING_RULES = [
-  [/display\s*:\s*none/i, 'display:none', 'certain'],
-  [/visibility\s*:\s*hidden/i, 'visibility:hidden', 'certain'],
-  [/opacity\s*:\s*0(?:\.0+)?\s*(?:;|$|")/i, 'opacity:0', 'certain'],
-  [/font-size\s*:\s*0(?:px|pt|em|rem)?\s*(?:;|$|")/i, 'font-size:0', 'certain'],
-  [/(?:left|top|text-indent)\s*:\s*-\s*\d{3,}\s*(?:px|em|rem)/i, 'pushed off-screen', 'certain'],
-  [/clip(?:-path)?\s*:\s*(?:rect\s*\(\s*0|inset\s*\(\s*100%)/i, 'clipped to nothing', 'certain'],
-  [/height\s*:\s*0(?:px)?\s*;[^"]*overflow\s*:\s*hidden/i, 'zero height', 'certain'],
-  [/color\s*:\s*(?:#fff(?:fff)?\b|white\b|rgba?\(\s*255\s*,\s*255\s*,\s*255|transparent\b)/i,
+  [new RegExp(DECL + 'display\\s*:\\s*none' + END, 'i'), 'display:none', 'certain'],
+  [new RegExp(DECL + 'visibility\\s*:\\s*(?:hidden|collapse)' + END, 'i'), 'visibility:hidden', 'certain'],
+  [new RegExp(DECL + 'opacity\\s*:\\s*(?:0*\\.?0+|0+%)' + END, 'i'), 'opacity:0', 'certain'],
+  [new RegExp(DECL + 'font-size\\s*:\\s*0*\\.?0+(?:px|pt|em|rem|%)?' + END, 'i'), 'font-size:0', 'certain'],
+  [new RegExp(DECL + '(?:[a-z-]*left|top|text-indent)\\s*:\\s*-\\s*\\d{3,}\\s*(?:px|em|rem)', 'i'), 'pushed off-screen', 'certain'],
+  [new RegExp(DECL + 'clip(?:-path)?\\s*:\\s*(?:rect\\s*\\(\\s*0|inset\\s*\\(\\s*(?:100|50)%)', 'i'), 'clipped to nothing', 'certain'],
+  [new RegExp(DECL + '(?:max-)?height\\s*:\\s*0(?:px)?' + END + '[^]*' + DECL + 'overflow\\s*:\\s*hidden', 'i'), 'zero height', 'certain'],
+  [new RegExp(DECL + 'color\\s*:\\s*(?:#fff(?:fff)?\\b|white\\b|rgba?\\(\\s*255\\s*,\\s*255\\s*,\\s*255|transparent\\b)', 'i'),
     'white or transparent text', 'likely'],
 ];
 
-const CLOSING = (tag) => new RegExp('</\\s*' + tag + '\\s*>', 'i');
 const TAG_OPEN = /<([a-z][a-z0-9]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/gi;
+const VOID_TAGS = /^(?:br|hr|img|input|meta|link|source|track|wbr|area|base|col|embed|param)$/i;
+
+const NAMED_ENTITIES = {
+  nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'",
+  colon: ':', semi: ';', num: '#', period: '.', sol: '/', bsol: '\\',
+};
+
+/** Undo the character references a browser resolves inside an attribute. */
+function decodeEntities(s) {
+  return s.replace(/&(?:#x([0-9a-f]{1,6})|#(\d{1,7})|([a-z]{2,8}));?/gi, (whole, hex, dec, name) => {
+    if (hex || dec) {
+      const cp = hex ? parseInt(hex, 16) : parseInt(dec, 10);
+      return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : whole;
+    }
+    return NAMED_ENTITIES[name.toLowerCase()] ?? whole;
+  });
+}
+
+/**
+ * CSS as a browser reads it, not as it was typed.
+ *
+ * `display:/* *\/none`, `displ\61 y:none` and, inside a style attribute,
+ * `display&#58;none` are all `display:none` to the renderer. A pattern that
+ * only knows the plain spelling is a pattern with a documented way around it,
+ * so comments go and escapes resolve before any rule is tested.
+ */
+function cssText(s) {
+  return String(s)
+    .replace(/\/\*[\s\S]*?(?:\*\/|$)/g, '')
+    .replace(/\\([0-9a-f]{1,6})\s?/gi, (whole, hex) => {
+      const cp = parseInt(hex, 16);
+      return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : '';
+    })
+    .replace(/\\(.)/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** The first hiding rule a declaration block trips, or null. */
+function hidingIn(declarations) {
+  for (const [re, how, confidence] of HIDING_RULES) {
+    if (re.test(declarations)) return { how, confidence };
+  }
+  return null;
+}
+
+function attrOf(attrs, name) {
+  const m = new RegExp('(?:^|\\s)' + name + '\\s*=\\s*(?:"([^"]*)"|\'([^\']*)\'|([^\\s>]+))', 'i').exec(attrs);
+  return m ? decodeEntities(m[1] ?? m[2] ?? m[3]) : null;
+}
 
 /** Strip tags and collapse whitespace, so the extract reads as what it says. */
 function plainText(html) {
@@ -79,46 +135,156 @@ function readsLikeProse(s) {
 }
 
 /**
+ * Block contexts whose rules apply to the page a person is looking at.
+ *
+ * `@media print { .x { display:none } }` hides nothing on screen, and the
+ * inside of `@keyframes` or `@font-face` is not a selector at all. The wrappers
+ * that merely scope rules -- screen media queries, `@supports`, `@layer`,
+ * `@container` -- are transparent.
+ */
+function appliesOnScreen(prelude) {
+  if (/^@media\b/i.test(prelude)) return !/\bprint\b/i.test(prelude) || /\b(?:screen|all)\b/i.test(prelude);
+  return /^@(?:supports|layer|container|scope)\b/i.test(prelude);
+}
+
+/**
+ * The part of a selector that names the element actually being styled.
+ *
+ * Only a plain compound qualifies: a tag, classes, an id. A selector that
+ * depends on state -- `:hover`, `:not(.open)`, `[aria-expanded]`, `::before` --
+ * describes a moment or a pseudo-element, not the text sitting in the
+ * document, and matching it anyway would report every dropdown on the web. An
+ * ancestor in front (`.card .note`) is dropped: the element still carries the
+ * class that hides it, and that much the markup can show.
+ */
+function subjectOf(selector) {
+  const last = selector.trim().split(/\s*[\s>+~]\s*/).pop();
+  const m = /^([a-z][a-z0-9-]*)?((?:[.#][-_a-z0-9]+)*)$/i.exec(last || '');
+  if (!m || (!m[1] && !m[2])) return null;
+  const classes = [];
+  let id = null;
+  for (const part of m[2].match(/[.#][-_a-z0-9]+/gi) || []) {
+    if (part[0] === '.') classes.push(part.slice(1));
+    else id = part.slice(1);
+  }
+  return { tag: m[1] ? m[1].toLowerCase() : null, classes, id, text: last };
+}
+
+/** Every rule in the document's own <style> blocks that hides what it selects. */
+export function hidingStylesheetRules(text) {
+  const out = [];
+  const block = /<style\b[^>]*>([\s\S]*?)<\/\s*style\s*>/gi;
+  let m;
+  while ((m = block.exec(text)) !== null) {
+    const css = cssText(m[1]);
+    const stack = [];
+    let buf = '';
+    for (const ch of css) {
+      if (ch === '{') {
+        stack.push(buf.trim());
+        buf = '';
+      } else if (ch === '}') {
+        const prelude = stack.pop();
+        if (prelude && !prelude.startsWith('@') && stack.every(appliesOnScreen)) {
+          const hiding = hidingIn(buf.trim());
+          if (hiding) {
+            for (const sel of prelude.split(',')) {
+              const subject = subjectOf(sel);
+              if (subject) out.push({ ...hiding, subject });
+            }
+          }
+        }
+        buf = '';
+      } else {
+        buf += ch;
+      }
+    }
+  }
+  return out;
+}
+
+function matchesSubject(subject, tag, classes, id) {
+  if (subject.tag && subject.tag !== tag) return false;
+  if (subject.id && subject.id !== id) return false;
+  return subject.classes.every((c) => classes.has(c));
+}
+
+/**
+ * Where an element ends, counting nested elements of the same name.
+ *
+ * Stopping at the first closing tag of the same name is a way around the
+ * check, not a simplification of it: a hidden div holding an empty div and
+ * then the payload would leave the payload outside the extract. So the scan
+ * keeps a depth.
+ */
+function closingOf(text, from, tag) {
+  const re = new RegExp('<(/?)\\s*' + tag + '(?![a-z0-9-])(?:"[^"]*"|\'[^\']*\'|[^>"\'])*>', 'gi');
+  re.lastIndex = from;
+  let depth = 1;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m[1]) {
+      if (--depth === 0) return m.index;
+    } else if (!/\/\s*>$/.test(m[0])) {
+      depth++;
+    }
+  }
+  return -1;
+}
+
+/**
  * Elements whose content is styled out of the rendered page.
  *
- * The scan is deliberately shallow: it pairs an opening tag with the next
- * closing tag of the same name and does not resolve nesting, stylesheets or
- * class-based rules. Inline styles are where this attack actually lives -- an
- * injected paragraph rarely arrives with its own stylesheet -- and claiming to
- * parse CSS this file does not parse would be worse than saying plainly that
- * it stops here.
+ * Two sources of styling are read: the element's own `style` attribute, and
+ * the rules in the document's `<style>` blocks whose selector matches it by
+ * tag, class or id. Linked stylesheets are not fetched -- nothing here makes a
+ * network request -- and selectors that depend on state or on the shape of the
+ * tree are not resolved. Each extract names the rule that did the hiding, so a
+ * reader can check it rather than take it on trust.
  */
 export function findStyledHidden(text) {
   const out = [];
+  const sheet = /<style\b/i.test(text) ? hidingStylesheetRules(text) : [];
+  let coveredUntil = -1;
+
   TAG_OPEN.lastIndex = 0;
   let m;
   while ((m = TAG_OPEN.exec(text)) !== null) {
-    const [whole, tag, attrs] = m;
-    if (/^(?:br|hr|img|input|meta|link|source|track|wbr|area|base|col|embed|param)$/i.test(tag)) continue;
+    const [whole, rawTag, attrs] = m;
+    if (VOID_TAGS.test(rawTag) || m.index < coveredUntil) continue;
+    const tag = rawTag.toLowerCase();
+    if (tag === 'style' || tag === 'script') continue;
 
     // The `hidden` attribute is deliberately not a trigger. It is the standard,
     // semantic way to toggle a piece of interface, which makes it the emoji
     // joiner of HTML: common, correct, and useless as a signal.
-    let how = null;
-    let confidence = 'certain';
-    for (const [re, label, level] of HIDING_RULES) {
-      if (re.test(attrs)) { how = label; confidence = level; break; }
+    const style = attrOf(attrs, 'style');
+    let hiding = style ? hidingIn(cssText(style)) : null;
+    let via = null;
+    if (!hiding && sheet.length) {
+      const classes = new Set((attrOf(attrs, 'class') || '').split(/\s+/).filter(Boolean));
+      const id = attrOf(attrs, 'id');
+      const rule = sheet.find((r) => matchesSubject(r.subject, tag, classes, id));
+      if (rule) { hiding = rule; via = rule.subject.text; }
     }
-    if (!how) continue;
+    if (!hiding) continue;
 
     const bodyStart = m.index + whole.length;
-    const rest = text.slice(bodyStart);
-    const close = CLOSING(tag).exec(rest);
-    const body = close ? rest.slice(0, close.index) : rest.slice(0, 4000);
-    const content = plainText(body);
+    const close = closingOf(text, bodyStart, tag);
+    const bodyEnd = close >= 0 ? close : Math.min(text.length, bodyStart + 4000);
+    const content = plainText(text.slice(bodyStart, bodyEnd));
     if (!readsLikeProse(content)) continue;
 
+    // Everything inside is already in this extract. A hidden child of a hidden
+    // parent is the same text, not a second finding.
+    coveredUntil = bodyEnd;
     out.push({
       start: m.index,
-      end: bodyStart + (close ? close.index : body.length),
-      tag: tag.toLowerCase(),
-      how,
-      confidence,
+      end: bodyEnd,
+      tag,
+      how: hiding.how,
+      confidence: hiding.confidence,
+      via,
       text: content,
     });
   }
