@@ -1,6 +1,6 @@
 {
   "name": "secondsight",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "See what the machine sees. Finds and decodes the text hiding in a file: invisible Unicode, ASCII smuggling, Trojan Source, homoglyphs, styled-out prompt injection, and per-recipient watermarks. Browser, CLI and CI. Zero dependencies.",
   "type": "module",
   "license": "MIT",
