@@ -19,7 +19,7 @@ import { sanitize } from './src/sanitize.js';
 import { buildSarif } from './src/sarif.js';
 import { compare, markSummary } from './src/compare.js';
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 
 const USAGE = `
 secondsight -- find the text you cannot see
