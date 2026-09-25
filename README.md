@@ -289,7 +289,7 @@ Tags block | variation-selector payloads | zero-width steganography (decoded acr
 ## Development
 
 ```bash
-node --test test/test.js     # 100 tests, zero dependencies
+node --test test/test.js     # 101 tests, zero dependencies
 npm run selfcheck            # the tool scans its own source and finds it clean
 python -m http.server 8080   # then open http://localhost:8080
 ```

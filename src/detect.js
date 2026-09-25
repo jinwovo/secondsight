@@ -289,11 +289,11 @@ function findHomographHosts(text) {
  * treated as suspicious.
  */
 /**
- * A measurement, not a word: `459μs`, `15μm`, `μg`. The SI micro
+ * A measurement, not a word: `459\u03BCs`, `15\u03BCm`, `\u03BCg`. The SI micro
  * prefix is typed as Greek mu far more often than as the micro sign, and a
  * benchmark table full of microseconds is not a spoofing attempt.
  */
-const MICRO_UNIT = /^[_*]*[\d.,]*μ(?:s|sec|m|g|l|L|V|A|F|W|Hz|mol|Pa)[_*]*$/;
+const MICRO_UNIT = /^[_*]*[\d.,]*\u03BC(?:s|sec|m|g|l|L|V|A|F|W|Hz|mol|Pa)[_*]*$/;
 
 function findMixedScriptWords(text, hostSpans = []) {
   const out = [];

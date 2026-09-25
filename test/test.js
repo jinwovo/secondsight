@@ -18,7 +18,7 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -755,6 +755,20 @@ describe('robustness', () => {
 
   test('lone surrogates do not throw', () => {
     assert.doesNotThrow(() => analyze('a\uD800b'));
+  });
+
+  test('the engine source is pure ASCII, checked without the engine', () => {
+    // selfcheck asks the engine to audit its own source, and an engine that
+    // has learned to excuse a character will excuse it there too -- 1.5.0's
+    // micro-unit rule once waved a literal mu through its own definition. So
+    // the promise in the README is checked here by byte, not by judgement.
+    const files = ['cli.js', 'action.yml', ...readdirSync(fileURLToPath(new URL('../src', import.meta.url)))
+      .filter((f) => f.endsWith('.js') && f !== 'specimens.js').map((f) => 'src/' + f)];
+    for (const f of files) {
+      const bytes = readFileSync(fileURLToPath(new URL('../' + f, import.meta.url)));
+      const at = bytes.findIndex((b) => b > 0x7f);
+      assert.equal(at, -1, f + ' has a non-ASCII byte at offset ' + at);
+    }
   });
 
   test('a large document stays fast', () => {

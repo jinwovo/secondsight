@@ -491,8 +491,8 @@ export function findDeceptiveLinks(text) {
   const out = [];
   const push = (start, end, kind, label, href) => {
     // A logo in the label is a picture of somewhere, not a claim about where
-    // the link goes: `[<img src="https://a.com/logo.png">](https://b.org)` is a
-    // sponsor badge. Only text a reader sees can make the claim.
+    // the link goes: a sponsor badge is an image hosted on one site, linking
+    // to another. Only text a reader sees can make the claim.
     const shown = hostInLabel(plainText(label.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')));
     if (!shown) return;
     const target = hostOf(href);
