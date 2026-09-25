@@ -140,12 +140,17 @@ npx secondsight --compare mine.md leaked.md
 # machine-readable, for scripts
 npx secondsight . --json
 
+# include untracked files that .gitignore excludes
+npx secondsight . --no-gitignore
+
 # a corpus of deliberate samples: skip it, or turn off the rules it is full of
 npx secondsight . --exclude test/fixtures
 npx secondsight test/fixtures --ignore styled-hidden-text,encoded-instructions
 ```
 
 `--ignore` is a command-line flag and nothing else. No marker written inside the text being scanned can silence a finding, because the text being scanned is exactly the thing you do not trust.
+
+Inside a git repository, a directory scan follows `.gitignore`: build output and other untracked, ignored paths are skipped, and the number skipped is printed on stderr and reported as `gitignored` in `--json`. Only *untracked* paths can be ignored -- a tracked file is scanned whatever `.gitignore` says, so an ignore rule can hide a build directory from the scan but never a file in the history. Agent instruction files (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `.cursorrules`, `*.mdc` ...) are read even when ignored, because an agent loads them either way. `--no-gitignore` scans everything.
 
 A file the scan could not read is never dropped quietly. Anything over 8 MB, or binary, is named on stderr and listed under `skipped` in `--json` -- padding a file past a size limit is the cheapest way around a scanner, so the limit is reported, not hidden. Environment files, lockfiles and agent rule files (`.env*`, `*.lock`, `.mdc`, `.clinerules`, `.windsurfrules`, `GEMINI.md`) are read by default, and a UTF-16 file is decoded as UTF-16 rather than as a row of NULs.
 
@@ -289,7 +294,7 @@ Tags block | variation-selector payloads | zero-width steganography (decoded acr
 ## Development
 
 ```bash
-node --test test/test.js     # 101 tests, zero dependencies
+node --test test/test.js     # 102 tests, zero dependencies
 npm run selfcheck            # the tool scans its own source and finds it clean
 python -m http.server 8080   # then open http://localhost:8080
 ```

@@ -13,7 +13,7 @@
 
 import { readFileSync, writeFileSync, statSync, lstatSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join, relative, extname, basename } from 'node:path';
+import { join, relative, resolve, extname, basename } from 'node:path';
 import { analyze, verdictFor, SEVERITY } from './src/detect.js';
 import { sanitize } from './src/sanitize.js';
 import { buildSarif } from './src/sarif.js';
@@ -40,6 +40,7 @@ Options
                      deliberate samples: test fixtures, security write-ups)
   --exclude <path>   skip a file or directory; repeatable
   --all              report every file, not just the ones with findings
+  --no-gitignore     also scan untracked files that .gitignore excludes
   --no-color         plain output
   -h, --help         this
 
@@ -54,7 +55,7 @@ const args = process.argv.slice(2);
 const opts = {
   json: false, sarif: false, sarifPath: null,
   fix: false, all: false, color: true, staged: false, compare: false,
-  failOn: 3, failOnExplicit: false, paths: [],
+  failOn: 3, failOnExplicit: false, paths: [], gitignore: true,
   ignore: new Set(), exclude: [],
 };
 
@@ -81,6 +82,7 @@ for (let i = 0; i < args.length; i++) {
     const p = String(args[++i] || '').trim();
     if (p) opts.exclude.push(slash(p));
   } else if (a === '--all') opts.all = true;
+  else if (a === '--no-gitignore') opts.gitignore = false;
   else if (a === '--no-color') opts.color = false;
   else if (a === '--fail-on') {
     const level = String(args[++i] || '').toUpperCase();
@@ -213,10 +215,70 @@ function withIgnores(result) {
   return { ...result, findings, verdict: verdictFor(worstLeft) };
 }
 
+// ---------------------------------------------------------------------------
+// .gitignore
+// ---------------------------------------------------------------------------
+
+/**
+ * Files an agent loads by name whether or not git tracks them. CLAUDE.local.md
+ * exists to be gitignored, and a rules file nobody committed is still the
+ * first thing an agent in that checkout reads -- so ignoring it would skip the
+ * one file most certain to have a machine reader.
+ */
+const AGENT_FILES = new Set([
+  'CLAUDE.md', 'CLAUDE.local.md', 'AGENTS.md', 'AGENTS.override.md', 'GEMINI.md', 'SKILL.md',
+  'copilot-instructions.md', '.cursorrules', '.windsurfrules', '.clinerules', '.roorules', '.goosehints',
+]);
+
+function isAgentFile(path) {
+  const name = basename(path);
+  return AGENT_FILES.has(name) || extname(name).toLowerCase() === '.mdc';
+}
+
+/** Paths git would not commit, as absolute slash-paths; directories end in '/'. */
+const gitIgnored = new Set();
+/** How many ignored paths the walk actually stepped over, for the report. */
+let ignoredCount = 0;
+
+/**
+ * Ask git which untracked paths under a directory its ignore rules exclude.
+ *
+ * Only untracked paths can be ignored: a tracked file is scanned whatever
+ * .gitignore says, so an ignore rule can hide a build directory from the scan
+ * but never a file that is in the history. Outside a repository, or without
+ * git, nothing is ignored and the walk is exactly what it was.
+ */
+function loadGitIgnored(dir) {
+  let out;
+  try {
+    out = execFileSync('git', ['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--directory'], {
+      cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch {
+    return;
+  }
+  for (const entry of out.split('\0')) {
+    if (!entry) continue;
+    const abs = slash(resolve(dir, entry));
+    gitIgnored.add(entry.endsWith('/') ? abs + '/' : abs);
+  }
+}
+
+function isGitIgnored(path, isDir) {
+  if (!gitIgnored.size) return false;
+  const abs = slash(resolve(path));
+  return gitIgnored.has(abs) || (isDir && gitIgnored.has(abs + '/'));
+}
+
 function collect(path, out = [], named = true) {
   let st;
   try { st = named ? statSync(path) : lstatSync(path); } catch { fail('cannot read ' + path); }
   if (isExcluded(path)) return out;
+  if (named && st.isDirectory() && opts.gitignore) loadGitIgnored(path);
+  if (!named && isGitIgnored(path, st.isDirectory()) && !(st.isFile() && isAgentFile(path))) {
+    ignoredCount++;
+    return out;
+  }
   // A path named on the command line is followed wherever it points. A link
   // met while walking is not: it can lead out of the tree, or round in a loop.
   if (st.isSymbolicLink()) return out;
@@ -458,6 +520,7 @@ if (opts.sarif) {
     version: 1,
     worst: worst < 0 ? 'CLEAN' : SEVERITY[worst],
     skipped,
+    gitignored: ignoredCount,
     files: reports.map(({ path, result }) => ({
       path,
       verdict: result.verdict.severity < 0 ? 'CLEAN' : result.verdict.label,
@@ -480,6 +543,13 @@ if (opts.sarif) {
     reports.length + ' file' + (reports.length === 1 ? '' : 's') + ' scanned, '
     + flagged + ' with findings',
   ) + '\n');
+}
+
+if (ignoredCount && !opts.json && !opts.sarif) {
+  process.stderr.write(
+    'secondsight: ' + ignoredCount + ' path' + (ignoredCount === 1 ? '' : 's')
+    + ' ignored by git were not scanned (--no-gitignore to include them)\n',
+  );
 }
 
 // On stderr in every mode, so it survives --json and --sarif on stdout. Only

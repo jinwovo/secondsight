@@ -18,7 +18,7 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -821,6 +821,30 @@ describe('command line', () => {
     const { json, stderr } = run(dir);
     assert.deepEqual(json.skipped.map((s) => basename(s.path)), ['padded.md']);
     assert.match(stderr, /not scanned \(larger than 8 MB\): .*padded\.md/);
+  });
+
+  test('.gitignore skips build output, never history, never an agent file', () => {
+    const dir = scratch();
+    const git = (...a) => spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd: dir, encoding: 'utf8' });
+    if (git('init', '-q').status !== 0) return;   // no git on this machine: nothing to test
+    mkdirSync(join(dir, 'generated'));
+    writeFileSync(join(dir, '.gitignore'), 'generated/\n*.log\nCLAUDE.local.md\nforced.md\n');
+    writeFileSync(join(dir, 'generated', 'bundle.js'), 'x ' + TAGS);       // build output: skipped
+    writeFileSync(join(dir, 'debug.log'), 'x ' + TAGS);               // not a text type anyway
+    writeFileSync(join(dir, 'CLAUDE.local.md'), 'x ' + TAGS);         // ignored, but an agent reads it
+    writeFileSync(join(dir, 'forced.md'), 'x ' + TAGS);               // ignored, but committed
+    writeFileSync(join(dir, 'notes.md'), 'x ' + TAGS);                // untracked, not ignored
+    git('add', '.gitignore');
+    git('add', '-f', 'forced.md');
+    git('commit', '-qm', 'init');
+
+    const { json } = run(dir);
+    assert.deepEqual(names(json), ['.gitignore', 'CLAUDE.local.md', 'forced.md', 'notes.md']);
+    assert.equal(json.gitignored, 2, 'generated/ and debug.log, counted rather than dropped');
+
+    const everything = run(dir, '--no-gitignore');
+    assert.deepEqual(names(everything.json), ['.gitignore', 'CLAUDE.local.md', 'bundle.js', 'forced.md', 'notes.md']);
+    assert.equal(everything.json.gitignored, 0);
   });
 
   test('binary files are skipped by content, not by guess', () => {
