@@ -11,7 +11,7 @@
  * Same engine as the web page, no network, no dependencies.
  */
 
-import { readFileSync, writeFileSync, statSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, statSync, lstatSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, relative, extname, basename } from 'node:path';
 import { analyze, verdictFor, SEVERITY } from './src/detect.js';
@@ -118,22 +118,78 @@ const SEVERITY_COLOR = ['2', '2', '33', '31', '1;31'];
 
 // Files an agent, a build or a reviewer is likely to read as text.
 const TEXT_EXTENSIONS = new Set([
-  '.md', '.markdown', '.txt', '.json', '.jsonc', '.yaml', '.yml', '.toml', '.ini',
-  '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.py', '.rb', '.go', '.rs',
-  '.java', '.kt', '.c', '.h', '.cc', '.cpp', '.cs', '.php', '.sh', '.bash', '.zsh',
-  '.html', '.css', '.scss', '.sql', '.graphql', '.env', '.cfg', '.conf', '.xml',
+  '.md', '.markdown', '.mdx', '.mdc', '.txt', '.rst', '.adoc', '.tex',
+  '.json', '.jsonc', '.json5', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf',
+  '.properties', '.env', '.xml', '.svg', '.csv', '.tsv', '.ipynb', '.lock',
+  '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.tsx', '.jsx', '.vue', '.svelte',
+  '.py', '.rb', '.go', '.rs', '.java', '.kt', '.kts', '.scala', '.swift', '.dart',
+  '.c', '.h', '.cc', '.cpp', '.hpp', '.cs', '.fs', '.php', '.pl', '.lua', '.r',
+  '.ex', '.exs', '.erl', '.hs', '.clj', '.el', '.vim', '.zig', '.nix',
+  '.sh', '.bash', '.zsh', '.fish', '.ps1', '.psm1', '.bat', '.cmd',
+  '.html', '.htm', '.css', '.scss', '.less', '.sql', '.graphql', '.gql', '.proto',
+  '.tf', '.hcl', '.gradle', '.cmake', '.mk',
 ]);
+// Read by name: build files with no extension, and the instruction files an
+// agent loads on startup -- the one place a hidden sentence is sure of a reader.
 const ALWAYS_READ = new Set([
-  'CLAUDE.md', 'AGENTS.md', 'SKILL.md', 'README.md', 'Dockerfile', 'Makefile',
-  '.cursorrules', '.gitattributes', '.npmrc',
+  'CLAUDE.md', 'AGENTS.md', 'GEMINI.md', 'SKILL.md', 'README.md',
+  'Dockerfile', 'Containerfile', 'Makefile', 'Jenkinsfile', 'Procfile', 'Vagrantfile',
+  'Gemfile', 'Rakefile', 'Brewfile', 'CODEOWNERS', 'LICENSE',
+  '.cursorrules', '.windsurfrules', '.clinerules', '.roorules', '.goosehints',
+  '.gitattributes', '.gitignore', '.gitmodules', '.npmrc', '.yarnrc', '.editorconfig',
+  '.env', '.envrc',
 ]);
+// Oversized files are reported, never skipped in silence: padding a file past
+// a scanner's size limit is the cheapest way around the scanner.
+const MAX_BYTES = 8 * 1024 * 1024;
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', 'vendor', 'target',
   '.next', '.venv', '__pycache__', 'coverage',
 ]);
 
 function isReadable(path) {
-  return ALWAYS_READ.has(basename(path)) || TEXT_EXTENSIONS.has(extname(path).toLowerCase());
+  const name = basename(path);
+  // extname('.env') is '' and extname('.env.production') is '.production', so
+  // the whole family of environment files has to be named outright.
+  return ALWAYS_READ.has(name) || /^\.env(?:\.|$)/i.test(name)
+    || TEXT_EXTENSIONS.has(extname(name).toLowerCase());
+}
+
+/** Files that were not scanned, and why. Leaving them out of the report would be lying by omission. */
+const skipped = [];
+
+function skip(path, reason) {
+  skipped.push({ path, reason });
+}
+
+/**
+ * A file's text, whatever it was saved as.
+ *
+ * A UTF-16 file read as UTF-8 comes out as a NUL between every letter: still
+ * flagged, but its payload is never decoded, and the decode is the half that
+ * matters. A byte-order mark says which it is; without one, NUL bytes in the
+ * first 8 KB mean binary. Returns null for binary.
+ */
+function readText(path) {
+  const bytes = readFileSync(path);
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return { text: bytes.subarray(2).toString('utf16le'), encoding: 'utf16le' };
+  }
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    const body = Buffer.from(bytes.subarray(2, 2 + ((bytes.length - 2) & ~1)));
+    return { text: body.swap16().toString('utf16le'), encoding: 'utf16be' };
+  }
+  if (bytes.subarray(0, 8192).includes(0)) return null;
+  return { text: bytes.toString('utf8'), encoding: 'utf8' };
+}
+
+/** The inverse of readText, so --fix leaves a file in the encoding it found it in. */
+function encodeAs(text, encoding) {
+  if (encoding === 'utf8') return Buffer.from(text, 'utf8');
+  const body = Buffer.from(text, 'utf16le');
+  if (encoding === 'utf16be') body.swap16();
+  const bom = Buffer.from(encoding === 'utf16be' ? [0xfe, 0xff] : [0xff, 0xfe]);
+  return Buffer.concat([bom, body]);
 }
 
 function isExcluded(path) {
@@ -157,17 +213,25 @@ function withIgnores(result) {
   return { ...result, findings, verdict: verdictFor(worstLeft) };
 }
 
-function collect(path, out = []) {
+function collect(path, out = [], named = true) {
   let st;
-  try { st = statSync(path); } catch { fail('cannot read ' + path); }
+  try { st = named ? statSync(path) : lstatSync(path); } catch { fail('cannot read ' + path); }
   if (isExcluded(path)) return out;
+  // A path named on the command line is followed wherever it points. A link
+  // met while walking is not: it can lead out of the tree, or round in a loop.
+  if (st.isSymbolicLink()) return out;
   if (st.isDirectory()) {
-    if (SKIP_DIRS.has(basename(path))) return out;
-    for (const entry of readdirSync(path)) collect(join(path, entry), out);
+    if (!named && SKIP_DIRS.has(basename(path))) return out;
+    for (const entry of readdirSync(path)) collect(join(path, entry), out, false);
     return out;
   }
-  if (st.size > 8 * 1024 * 1024) return out;
-  if (isReadable(path)) out.push(path);
+  // A file someone named is read whatever its extension; they asked for it.
+  if (!named && !isReadable(path)) return out;
+  if (st.size > MAX_BYTES) {
+    skip(path, 'larger than ' + (MAX_BYTES >> 20) + ' MB');
+    return out;
+  }
+  out.push(path);
   return out;
 }
 
@@ -317,7 +381,12 @@ function stagedFiles() {
   return out.split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
-    .filter((path) => existsAsPath(path) && isReadable(path) && !isExcluded(path));
+    .filter((path) => existsAsPath(path) && isReadable(path) && !isExcluded(path))
+    .filter((path) => {
+      if (statSync(path).size <= MAX_BYTES) return true;
+      skip(path, 'larger than ' + (MAX_BYTES >> 20) + ' MB');
+      return false;
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -343,8 +412,10 @@ if (!reading) {
   if (!opts.json && !opts.sarif) reportText('<stdin>', result);
 } else {
   for (const path of targets) {
-    let text;
-    try { text = readFileSync(path, 'utf8'); } catch { continue; }
+    let read;
+    try { read = readText(path); } catch { skip(path, 'unreadable'); continue; }
+    if (!read) { skip(path, 'binary'); continue; }
+    const { text, encoding } = read;
     const result = withIgnores(analyze(text));
     worst = Math.max(worst, result.verdict.severity);
     reports.push({ path, result });
@@ -353,7 +424,7 @@ if (!reading) {
     if (opts.fix && result.verdict.severity >= 0) {
       const cleaned = sanitize(text);
       if (cleaned.text !== text) {
-        writeFileSync(path, cleaned.text, 'utf8');
+        writeFileSync(path, encodeAs(cleaned.text, encoding));
         if (!opts.json && !opts.sarif) {
           process.stdout.write('  ' + paint('32', 'fixed') + dim(
             '  removed ' + cleaned.removed + ' character' + (cleaned.removed === 1 ? '' : 's'),
@@ -386,6 +457,7 @@ if (opts.sarif) {
   process.stdout.write(JSON.stringify({
     version: 1,
     worst: worst < 0 ? 'CLEAN' : SEVERITY[worst],
+    skipped,
     files: reports.map(({ path, result }) => ({
       path,
       verdict: result.verdict.severity < 0 ? 'CLEAN' : result.verdict.label,
@@ -408,6 +480,14 @@ if (opts.sarif) {
     reports.length + ' file' + (reports.length === 1 ? '' : 's') + ' scanned, '
     + flagged + ' with findings',
   ) + '\n');
+}
+
+// On stderr in every mode, so it survives --json and --sarif on stdout. Only
+// files a scan would have read land here; a directory of images is not news.
+for (const { path, reason } of skipped) {
+  process.stderr.write(
+    'secondsight: not scanned (' + reason + '): ' + (relative(process.cwd(), path) || path) + '\n',
+  );
 }
 
 // With --sarif, GitHub's code scanning decides how to surface and gate the

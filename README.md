@@ -147,6 +147,8 @@ npx secondsight test/fixtures --ignore styled-hidden-text,encoded-instructions
 
 `--ignore` is a command-line flag and nothing else. No marker written inside the text being scanned can silence a finding, because the text being scanned is exactly the thing you do not trust.
 
+A file the scan could not read is never dropped quietly. Anything over 8 MB, or binary, is named on stderr and listed under `skipped` in `--json` -- padding a file past a size limit is the cheapest way around a scanner, so the limit is reported, not hidden. Environment files, lockfiles and agent rule files (`.env*`, `*.lock`, `.mdc`, `.clinerules`, `.windsurfrules`, `GEMINI.md`) are read by default, and a UTF-16 file is decoded as UTF-16 rather than as a row of NULs.
+
 **In CI, as a GitHub Action** -- fail a build when someone slips invisible characters into an instruction file, a lockfile, or a commit. One step, nothing to install:
 
 ```yaml
@@ -287,7 +289,7 @@ Tags block | variation-selector payloads | zero-width steganography (decoded acr
 ## Development
 
 ```bash
-node --test test/test.js     # 88 tests, zero dependencies
+node --test test/test.js     # 92 tests, zero dependencies
 npm run selfcheck            # the tool scans its own source and finds it clean
 python -m http.server 8080   # then open http://localhost:8080
 ```

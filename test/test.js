@@ -15,8 +15,13 @@
  * emoji, all of which are full of characters that look alarming out of context.
  */
 
-import { test, describe } from 'node:test';
+import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { analyze, verdictFor, visibleText, CRITICAL, HIGH, MEDIUM, LOW, INFO } from '../src/detect.js';
 import { sanitize } from '../src/sanitize.js';
@@ -678,5 +683,60 @@ describe('robustness', () => {
     const started = Date.now();
     analyze(big);
     assert.ok(Date.now() - started < 4000, 'analysis took too long');
+  });
+});
+
+describe('command line', () => {
+  const CLI = fileURLToPath(new URL('../cli.js', import.meta.url));
+  const TAGS = cp(0xe0049, 0xe0067, 0xe006e, 0xe006f, 0xe0072, 0xe0065); // "Ignore"
+
+  const run = (...args) => {
+    const r = spawnSync(process.execPath, [CLI, ...args, '--json'], { encoding: 'utf8' });
+    return { status: r.status, stderr: r.stderr, json: r.stdout ? JSON.parse(r.stdout) : null };
+  };
+  const dirs = [];
+  const scratch = () => { const d = mkdtempSync(join(tmpdir(), 'secondsight-')); dirs.push(d); return d; };
+  after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+  const names = (json) => json.files.map((f) => basename(f.path)).sort();
+
+  test('environment files, lockfiles and agent rule files are read', () => {
+    const dir = scratch();
+    const files = ['.env', '.env.production', 'yarn.lock', 'rules.mdc', '.clinerules', 'GEMINI.md'];
+    for (const f of files) writeFileSync(join(dir, f), 'x ' + TAGS + '\n');
+    const { status, json } = run(dir);
+    assert.deepEqual(names(json), [...files].sort());
+    assert.ok(json.files.every((f) => f.verdict === 'CRITICAL'));
+    assert.equal(status, 1);
+  });
+
+  test('a UTF-16 file is decoded, and --fix keeps it UTF-16', () => {
+    const dir = scratch();
+    const path = join(dir, 'notes.md');
+    const bom = Buffer.from([0xff, 0xfe]);
+    writeFileSync(path, Buffer.concat([bom, Buffer.from('hi ' + TAGS, 'utf16le')]));
+
+    const { json } = run(path);
+    assert.equal(json.files[0].findings[0].decoded, 'Ignore', 'the payload, not a row of NULs');
+
+    spawnSync(process.execPath, [CLI, path, '--fix'], { encoding: 'utf8' });
+    assert.deepEqual(readFileSync(path), Buffer.concat([bom, Buffer.from('hi ', 'utf16le')]));
+  });
+
+  test('a file too large to scan is reported, not dropped', () => {
+    const dir = scratch();
+    writeFileSync(join(dir, 'padded.md'), Buffer.alloc(8 * 1024 * 1024 + 1, 0x61));
+    const { json, stderr } = run(dir);
+    assert.deepEqual(json.skipped.map((s) => basename(s.path)), ['padded.md']);
+    assert.match(stderr, /not scanned \(larger than 8 MB\): .*padded\.md/);
+  });
+
+  test('binary files are skipped by content, not by guess', () => {
+    const dir = scratch();
+    writeFileSync(join(dir, 'blob.json'), Buffer.from([0x7b, 0x00, 0x01, 0x7d]));
+    writeFileSync(join(dir, 'ok.json'), '{"a": 1}');
+    const { status, json } = run(dir);
+    assert.deepEqual(names(json), ['ok.json']);
+    assert.equal(json.skipped[0].reason, 'binary');
+    assert.equal(status, 0);
   });
 });
