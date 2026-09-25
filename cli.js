@@ -547,8 +547,8 @@ if (opts.sarif) {
 
 if (ignoredCount && !opts.json && !opts.sarif) {
   process.stderr.write(
-    'secondsight: ' + ignoredCount + ' path' + (ignoredCount === 1 ? '' : 's')
-    + ' ignored by git were not scanned (--no-gitignore to include them)\n',
+    'secondsight: ' + ignoredCount + (ignoredCount === 1 ? ' path ignored by git was' : ' paths ignored by git were')
+    + ' not scanned (--no-gitignore to include them)\n',
   );
 }
 
