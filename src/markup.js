@@ -23,6 +23,8 @@
  * Zero dependencies. Pure ASCII source.
  */
 
+import { isAddressed, isPointed } from './decode.js';
+
 // ---------------------------------------------------------------------------
 // Text hidden by styling
 // ---------------------------------------------------------------------------
@@ -94,10 +96,26 @@ function cssText(s) {
     .trim();
 }
 
+/**
+ * White text is only hidden on a white page. A rule that sets its own dark
+ * background -- a button, a banner, a dark theme -- is showing its text, not
+ * hiding it. So is transparent text clipped to a gradient background, which is
+ * how every gradient heading on the web is drawn.
+ */
+const LIGHT = '(?:#fff(?:fff)?\\b|white\\b|transparent\\b|none\\b|rgba?\\(\\s*255\\s*,\\s*255\\s*,\\s*255|inherit\\b|initial\\b|unset\\b)';
+const OWN_BACKGROUND = new RegExp(DECL + 'background(?:-color|-image)?\\s*:\\s*(?!' + LIGHT + ')\\S', 'i');
+const CLIPPED_TO_TEXT = new RegExp(DECL + '(?:-webkit-)?background-clip\\s*:\\s*text', 'i');
+
+function paintsItsOwnBackground(declarations) {
+  return OWN_BACKGROUND.test(declarations) || CLIPPED_TO_TEXT.test(declarations);
+}
+
 /** The first hiding rule a declaration block trips, or null. */
 function hidingIn(declarations) {
   for (const [re, how, confidence] of HIDING_RULES) {
-    if (re.test(declarations)) return { how, confidence };
+    if (!re.test(declarations)) continue;
+    if (how === 'white or transparent text' && paintsItsOwnBackground(declarations)) continue;
+    return { how, confidence };
   }
   return null;
 }
@@ -110,6 +128,7 @@ function attrOf(attrs, name) {
 /** Strip tags and collapse whitespace, so the extract reads as what it says. */
 function plainText(html) {
   return html
+    .replace(/<(style|script)\b[^>]*>[\s\S]*?<\/\s*\1\s*>/gi, ' ')
     .replace(/<[^>]*>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
@@ -187,7 +206,9 @@ export function hidingStylesheetRules(text) {
         const prelude = stack.pop();
         if (prelude && !prelude.startsWith('@') && stack.every(appliesOnScreen)) {
           const hiding = hidingIn(buf.trim());
-          if (hiding) {
+          // White text in a dark colour scheme is the whole point of one.
+          const darkScheme = stack.some((p) => /prefers-color-scheme\s*:\s*dark/i.test(p));
+          if (hiding && !(darkScheme && hiding.confidence === 'likely')) {
             for (const sel of prelude.split(',')) {
               const subject = subjectOf(sel);
               if (subject) out.push({ ...hiding, subject });
@@ -201,6 +222,42 @@ export function hidingStylesheetRules(text) {
     }
   }
   return out;
+}
+
+/**
+ * SVG styling written as attributes rather than as CSS.
+ *
+ * A text element with `opacity="0"` hides exactly what `opacity:0` hides, and an
+ * SVG is a file the scan now reads, so the same rules run over the same
+ * properties spelled the other way. Fill is only read on text elements: a
+ * `fill="none"` on the root of an icon is how icons are drawn, not how
+ * sentences are hidden.
+ */
+const PRESENTATION = ['display', 'visibility', 'opacity', 'font-size'];
+const SVG_TEXT = /^(?:text|tspan|textpath)$/;
+
+function hidingByAttribute(tag, attrs) {
+  const declarations = [];
+  for (const name of PRESENTATION) {
+    const value = attrOf(attrs, name);
+    if (value !== null) declarations.push(name + ':' + value);
+  }
+  const found = declarations.length ? hidingIn(cssText(declarations.join(';'))) : null;
+  if (found) return { ...found, via: found.how.split(':')[0] + ' attribute' };
+
+  if (!SVG_TEXT.test(tag)) return null;
+  const fillOpacity = attrOf(attrs, 'fill-opacity');
+  if (fillOpacity !== null && /^\s*0*\.?0+\s*$/.test(fillOpacity) && !attrOf(attrs, 'stroke')) {
+    return { how: 'fill-opacity:0', confidence: 'certain', via: 'fill-opacity attribute' };
+  }
+  const fill = attrOf(attrs, 'fill');
+  if (fill !== null && /^\s*(?:none|transparent)\s*$/i.test(fill) && !attrOf(attrs, 'stroke')) {
+    return { how: 'no fill', confidence: 'certain', via: 'fill attribute' };
+  }
+  if (fill !== null && /^\s*(?:#fff(?:fff)?|white|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\))\s*$/i.test(fill)) {
+    return { how: 'white or transparent text', confidence: 'likely', via: 'fill attribute' };
+  }
+  return null;
 }
 
 function matchesSubject(subject, tag, classes, id) {
@@ -261,6 +318,10 @@ export function findStyledHidden(text) {
     const style = attrOf(attrs, 'style');
     let hiding = style ? hidingIn(cssText(style)) : null;
     let via = null;
+    if (!hiding) {
+      hiding = hidingByAttribute(tag, attrs);
+      if (hiding) via = hiding.via;
+    }
     if (!hiding && sheet.length) {
       const classes = new Set((attrOf(attrs, 'class') || '').split(/\s+/).filter(Boolean));
       const id = attrOf(attrs, 'id');
@@ -292,26 +353,53 @@ export function findStyledHidden(text) {
 }
 
 /**
- * HTML comments that read like instructions.
+ * Comments that read like instructions.
  *
  * A comment is not suspicious. A comment is the normal way to leave a note in
  * a file. What is suspicious is a comment addressed to a language model, so
- * this only reports the ones an intent reader recognises -- the caller passes
- * that reader in, because deciding what an instruction looks like belongs with
- * every other such decision, not scattered across two files.
+ * this only reports the ones addressed to one -- an override, a persona, a
+ * request to hide or to send something. A licence URL or a mention of `rm -rf`
+ * in a note is a note. The caller passes the intent reader in, and decode.js
+ * decides which intents count as addressed, so what an instruction looks like
+ * is decided in one place, not scattered across two files.
+ *
+ * Two syntaxes. An HTML comment, and Markdown's own idiom for one: a link
+ * reference definition that nothing refers to, `[//]: # (like this)`. A
+ * definition renders nowhere whatever it says -- its label, its target and its
+ * title all vanish from the page -- which is exactly why READMEs and SKILL.md
+ * files use it for notes, and exactly why it is worth reading.
  */
 export function findLoadedComments(text, readIntent) {
   const out = [];
-  const re = /<!--([\s\S]{0,4000}?)-->/g;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    const body = plainText(m[1]);
-    if (body.length < 12) continue;
+  const push = (start, end, kind, body) => {
+    if (body.length < 12) return;
     const intents = readIntent(body);
-    if (!intents.length) continue;
-    out.push({ start: m.index, end: m.index + m[0].length, text: body, intents });
+    if (isAddressed(intents)) out.push({ start, end, kind, text: body, intents });
+  };
+
+  const html = /<!--([\s\S]{0,4000}?)-->/g;
+  let m;
+  while ((m = html.exec(text)) !== null) {
+    push(m.index, m.index + m[0].length, 'html', plainText(m[1]));
   }
-  return out;
+
+  // label, destination, then an optional title in "", '' or (), which may run
+  // onto the next line. The label only counts as hidden text when the target
+  // is a placeholder (`#`, `<>`, `//`) -- that is the comment idiom; otherwise
+  // it is the name of a real link, and only the title is unseen.
+  const definition = /^ {0,3}\[([^\]\n]{1,400})\]:[ \t]*(<[^>\n]*>|\S+)(?:[ \t]*\n?[ \t]*("([^"]{0,4000})"|'([^']{0,4000})'|\(([^()]{0,4000})\)))?[ \t]*$/gm;
+  while ((m = definition.exec(text)) !== null) {
+    const [whole, label, target, , double, single, paren] = m;
+    const title = double ?? single ?? paren ?? '';
+    const placeholder = /^(?:#|<>|<#>|\/\/)$/.test(target);
+    const body = [placeholder ? label : '', title]
+      .filter((s) => s && !/^(?:\/\/|comment|_|#)$/i.test(s.trim()))
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    push(m.index, m.index + whole.length, 'markdown', body);
+  }
+  return out.sort((a, b) => a.start - b.start);
 }
 
 // ---------------------------------------------------------------------------
@@ -346,10 +434,45 @@ function hostInLabel(label) {
   return bare ? bare[1] : null;
 }
 
-/** The last two labels of a hostname: enough to tell github from evil. */
+/**
+ * Suffixes under which anyone can register a name, so the site is the label
+ * in front of them. Without this, `bbc.co.uk` and `evil.co.uk` are both just
+ * "co.uk", and a link from one to the other passes as a link to itself. Not
+ * the whole Public Suffix List -- the country suffixes people actually spoof,
+ * and the hosting platforms where every subdomain is a different owner.
+ */
+const SHARED_SUFFIXES = new Set([
+  'co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'me.uk', 'com.au', 'net.au', 'org.au', 'gov.au',
+  'co.jp', 'ne.jp', 'or.jp', 'ac.jp', 'co.kr', 'or.kr', 'ac.kr', 'go.kr', 'com.cn', 'net.cn',
+  'com.tw', 'com.hk', 'com.sg', 'co.in', 'co.nz', 'co.za', 'com.br', 'com.mx', 'com.ar',
+  'com.tr', 'co.il', 'co.id', 'com.my', 'com.ph', 'com.vn',
+  'github.io', 'gitlab.io', 'netlify.app', 'vercel.app', 'pages.dev', 'workers.dev',
+  'herokuapp.com', 'blogspot.com', 'web.app', 'firebaseapp.com', 'azurewebsites.net',
+  'cloudfront.net', 'ngrok.io', 'ngrok-free.app', 'glitch.me', 'repl.co', 's3.amazonaws.com',
+]);
+
+/**
+ * Link shorteners run by the site they point into. `aka.ms` is Microsoft's,
+ * and Microsoft's own SECURITY.md template -- in thousands of repositories --
+ * labels an aka.ms link as msrc.microsoft.com. That is one owner under two
+ * names, not a label lying about a destination. Kept short and first-party
+ * only: bit.ly and friends belong to nobody in particular, so they stay out.
+ */
+const SAME_OWNER = new Map([
+  ['aka.ms', 'microsoft.com'], ['youtu.be', 'youtube.com'], ['goo.gl', 'google.com'],
+  ['g.co', 'google.com'], ['git.io', 'github.com'], ['amzn.to', 'amazon.com'],
+  ['fb.me', 'facebook.com'], ['lnkd.in', 'linkedin.com'], ['t.co', 'x.com'],
+  ['twitter.com', 'x.com'], ['redd.it', 'reddit.com'], ['wp.me', 'wordpress.com'],
+]);
+
+/** The registrable part of a hostname: enough to tell github from evil. */
 function registrable(host) {
   const parts = String(host).toLowerCase().replace(/\.$/, '').split('.');
-  return parts.slice(-2).join('.');
+  const lastTwo = parts.slice(-2).join('.');
+  const site = SHARED_SUFFIXES.has(lastTwo) || SHARED_SUFFIXES.has(parts.slice(-3).join('.'))
+    ? parts.slice(SHARED_SUFFIXES.has(parts.slice(-3).join('.')) ? -4 : -3).join('.')
+    : lastTwo;
+  return SAME_OWNER.get(site) || site;
 }
 
 function hostOf(url) {
@@ -367,7 +490,10 @@ function hostOf(url) {
 export function findDeceptiveLinks(text) {
   const out = [];
   const push = (start, end, kind, label, href) => {
-    const shown = hostInLabel(label);
+    // A logo in the label is a picture of somewhere, not a claim about where
+    // the link goes: `[<img src="https://a.com/logo.png">](https://b.org)` is a
+    // sponsor badge. Only text a reader sees can make the claim.
+    const shown = hostInLabel(plainText(label.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')));
     if (!shown) return;
     const target = hostOf(href);
     if (!target) return;
@@ -377,7 +503,13 @@ export function findDeceptiveLinks(text) {
 
   const md = /\[([^\]\n]{1,200})\]\(\s*<?([^)\s>]+)>?\s*(?:"[^"]*")?\s*\)/g;
   let m;
-  while ((m = md.exec(text)) !== null) push(m.index, m.index + m[0].length, 'markdown', m[1], m[2]);
+  while ((m = md.exec(text)) !== null) {
+    // An image is not a link, and a label that opens with one is a badge the
+    // pattern has cut in half -- `[![alt](img)](href)` pairs the alt text
+    // with the image URL. The rule stays with whole links it can read.
+    if (text[m.index - 1] === '!' || m[1].startsWith('![')) continue;
+    push(m.index, m.index + m[0].length, 'markdown', m[1], m[2]);
+  }
 
   const anchor = /<a\b((?:"[^"]*"|'[^']*'|[^>"'])*)>([\s\S]{0,400}?)<\/\s*a\s*>/gi;
   while ((m = anchor.exec(text)) !== null) {
@@ -399,6 +531,9 @@ export function findExecutableHrefs(text) {
     const scheme = /^\s*([a-z]+)\s*:/i.exec(value)[1].toLowerCase();
     // A data: image in an href is a picture, not a program.
     if (scheme === 'data' && /^\s*data\s*:\s*image\//i.test(value)) continue;
+    // `javascript:void(0)` is the old idiom for a link that does nothing, and
+    // it is all over documentation. A program that returns nothing is not one.
+    if (scheme === 'javascript' && /^\s*javascript\s*:\s*(?:void\s*\(?\s*0\s*\)?)?\s*;?\s*$/i.test(value)) continue;
     out.push({
       start: m.index, end: m.index + m[0].length, scheme,
       sample: value.replace(/\s+/g, ' ').slice(0, 90),
@@ -425,7 +560,10 @@ export function findExfilImages(text) {
     const q = url.indexOf('?');
     if (q < 0) return;
     const query = url.slice(q + 1);
-    if (!CARRIER_PARAMS.test(query)) return;
+    // Parameter names, not values: a badge's `logo=data:image/svg+xml` has the
+    // word "data" in it and carries nothing anywhere.
+    const names = query.split('&').map((pair) => pair.split('=')[0]).join(' ');
+    if (!CARRIER_PARAMS.test(names)) return;
     const host = hostOf(url);
     if (!host) return;
     const empty = /=(?:$|&)/.test(query);
@@ -470,8 +608,10 @@ function decodeBase64(chunk) {
  * Base64 is everywhere -- keys, hashes, inline images, lockfile integrity
  * fields -- so decoding one proves nothing on its own and reporting every
  * successful decode would bury the page in noise. A run is only reported when
- * it turns into readable text *and* that text reads as an instruction, which
- * is the one case where the encoding was the point.
+ * it turns into readable text *and* that text reads as an instruction or a
+ * command -- not merely a URL or the word "password", which is what a decoded
+ * config or token looks like. That is the one case where the encoding was the
+ * point.
  */
 export function findEncodedInstructions(text, readIntent, isPlausibleText) {
   const out = [];
@@ -480,10 +620,13 @@ export function findEncodedInstructions(text, readIntent, isPlausibleText) {
   while ((m = BASE64_RUN.exec(text)) !== null) {
     const chunk = m[0];
     if (chunk.length > 8000) continue;
+    // The body of a `data:image/...;base64,` URI is a picture. An inline SVG
+    // decodes to markup, which is not an instruction for being markup.
+    if (/data:image\/[a-z0-9.+-]+;base64,$/i.test(text.slice(Math.max(0, m.index - 64), m.index))) continue;
     const decoded = decodeBase64(chunk);
     if (!decoded || !isPlausibleText(decoded, 16)) continue;
     const intents = readIntent(decoded);
-    if (!intents.length) continue;
+    if (!isPointed(intents)) continue;
     out.push({
       start: m.index, end: m.index + chunk.length,
       encoded: chunk.slice(0, 60), decoded, intents,

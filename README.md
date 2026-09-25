@@ -76,10 +76,10 @@ application.html  CRITICAL
 
 Each of these is held to the same no-crying-wolf standard as the rest of the engine, and each rule states where it stops:
 
-- **Styled-out text** -- `display:none`, `visibility:hidden`, `font-size:0`, `opacity:0`, off-screen positioning, white-on-white -- set inline or by a rule in the page's own `<style>` block, and the finding names the rule (`display:none via .note`). CSS is read the way a browser reads it, so comments, CSS escapes and character references do not get a payload past it. Reported only when the hidden content reads as *prose*, because hiding part of an interface is ordinary; the `hidden` attribute is deliberately not a trigger at all.
-- **HTML comments** -- reported only when the comment reads as an instruction. An ordinary TODO is an ordinary TODO.
-- **Base64** -- reported only when a run decodes to readable text *and* that text reads as an instruction. Every lockfile on earth is full of base64; flagging all of it is the same as flagging none of it.
-- **Deceptive links** -- a label that is itself a hostname, pointing at a different registrable domain. `[README.md](...)` is a filename, not a claim, even though `.md` is a real TLD.
+- **Styled-out text** -- `display:none`, `visibility:hidden`, `font-size:0`, `opacity:0`, off-screen positioning, white-on-white -- set inline, by a rule in the page's own `<style>` block, or by an SVG attribute such as `opacity="0"`, and the finding names the rule (`display:none via .note`). White text on a background of its own -- a button, a dark theme, a gradient heading -- is drawn, not hidden, and is left alone. CSS is read the way a browser reads it, so comments, CSS escapes and character references do not get a payload past it. Reported only when the hidden content reads as *prose*, because hiding part of an interface is ordinary; the `hidden` attribute is deliberately not a trigger at all.
+- **Comments** -- HTML comments, and Markdown's own idiom for one, `[//]: # (...)`, a link definition nothing links to. Reported only when the comment is *addressed to a machine*: an override, a persona, a request to hide or send something. A licence URL or a mention of `rm -rf` in a note is a note, and an ordinary TODO is an ordinary TODO.
+- **Base64** -- reported only when a run decodes to readable text *and* that text reads as an instruction or a command, not merely a URL; the body of a `data:image` URI is a picture. Every lockfile on earth is full of base64; flagging all of it is the same as flagging none of it.
+- **Deceptive links** -- a label that is itself a hostname, pointing at a different registrable domain. `[README.md](...)` is a filename, not a claim, even though `.md` is a real TLD, and a logo inside a link is a picture, not a label. Sites are compared the way registries sell them, so `bbc.co.uk` and `evil.co.uk` are two sites, not one "co.uk"; a first-party shortener such as `aka.ms` counts as its owner.
 - **Image exfiltration** -- images are fetched with nobody clicking anything, so a query parameter is the standard way a hidden instruction gets its answer back out. A remote image is ordinary; a remote image with an empty slot waiting for a value is not.
 
 ## Which copy leaked?
@@ -276,11 +276,11 @@ c.copies[0].payloads[0].decoded; // 'recipient=j.kown;copy=0447'
 
 ## What it looks for
 
-Tags block | variation-selector payloads | zero-width steganography (decoded across the common encodings) | bidirectional overrides and isolates (Trojan Source) | ANSI escape sequences that rewrite terminal output | homoglyphs and mixed-script words | **homograph domains, with the punycode they resolve to** | full-width and mathematical compatibility forms | Unicode noncharacters and Private Use Area | deprecated format characters | interlinear annotation | stacked combining marks | unusual spaces | normalization drift | **text styled out of the page** | **instruction-bearing HTML comments** | **base64 that unpacks into instructions** | **links whose label names another host** | **image URLs with a slot for your data** | **per-recipient watermarks, by comparing two copies**. Every finding carries its codepoint offsets, and the decoders round-trip against their own encoders in the test suite.
+Tags block | variation-selector payloads | zero-width steganography (decoded across the common encodings) | bidirectional overrides and isolates (Trojan Source) | ANSI escape sequences that rewrite terminal output | homoglyphs and mixed-script words | **homograph domains, with the punycode they resolve to** | full-width and mathematical compatibility forms | Unicode noncharacters and Private Use Area | deprecated format characters | interlinear annotation | stacked combining marks | unusual spaces | normalization drift | **text styled out of the page** | **instruction-bearing HTML and Markdown comments** | **base64 that unpacks into instructions** | **links whose label names another host** | **image URLs with a slot for your data** | **per-recipient watermarks, by comparing two copies**. Every finding carries its codepoint offsets, and the decoders round-trip against their own encoders in the test suite.
 
 ## Honest limitations
 
-- **Intent-reading is a heuristic.** When a decoded payload looks like an instruction rather than a serial number, that is pattern matching, and it is labelled as such in the output. It raises a finding's severity; it never invents one.
+- **Intent-reading is a heuristic.** When a decoded payload looks like an instruction rather than a serial number, that is pattern matching, and it is labelled as such in the output. It raises a finding's severity; it never invents one. Where the payload was not hidden by any unusual means -- a comment, a base64 run -- only the intents that address a model count, because a URL in a note proves nothing.
 - **Zero-width steganography has no single standard.** Known encodings are decoded; anything else is reported as *present but not decoded*, because a confident wrong answer is worse than an honest gap.
 - **Homoglyph coverage is the common attack set, not all of Unicode.** Mixed-script detection needs no table and catches the general case; the named lookalike table covers the scripts actually used for spoofing.
 - **The markup scan reads the page, not the web.** Inline styles, the document's own `<style>` blocks and comments are read, with nesting counted. Linked stylesheets are never fetched -- nothing here makes a network request -- and a rule is only matched by tag, class and id: selectors that depend on state (`:hover`, `:not()`, attribute selectors) or on tree shape beyond the element itself are not resolved. Claiming to apply CSS this does not apply would be worse than saying plainly where it stops.
@@ -289,7 +289,7 @@ Tags block | variation-selector payloads | zero-width steganography (decoded acr
 ## Development
 
 ```bash
-node --test test/test.js     # 92 tests, zero dependencies
+node --test test/test.js     # 100 tests, zero dependencies
 npm run selfcheck            # the tool scans its own source and finds it clean
 python -m http.server 8080   # then open http://localhost:8080
 ```

@@ -254,7 +254,38 @@ const INTENT_PATTERNS = [
   [/\b(rm\s+-rf|del\s+\/[sfq]|format\s+c:)/i, 'destructive command'],
   [/\b(tool|function)[\s_-]?call\b/i, 'tool-call reference'],
   [/https?:\/\/[^\s"'<>]+/i, 'embedded URL'],
+  [/\b(read|cat|print|include|output|reveal|send|copy|paste|attach)\b[^.\n]{0,40}(~\/\.ssh|id_rsa|id_ed25519|\.aws\/credentials|authorized_keys|\bapi[_-]?keys?\b|\baccess[_-]?tokens?\b|\bpasswords?\b)/i, 'credential request'],
+  [/\b(AI|assistants?|language\s+models?|LLMs?|agents?|chatbots?|Claude|GPT|Copilot|Gemini)\b[^.\n]{0,40}\b(must|should|shall|are\s+(?:instructed|required)|need\s+to)\b/i, 'addressed to a model'],
 ];
+
+/**
+ * The intents that say who the text is talking to, not merely what it mentions.
+ *
+ * A URL, a password field or `rm -rf` turn up in ordinary notes all the time
+ * -- a licence header, a commented-out badge, a changelog entry. Inside a
+ * payload that was hidden in invisible characters they are damning, because
+ * the hiding already happened. Inside a comment, which hides nothing, they
+ * prove nothing. A comment has to be addressed to a machine before it is
+ * reported, and these are the intents that establish that.
+ */
+const ADDRESSED = new Set([
+  'instruction override', 'system prompt reference', 'persona reassignment',
+  'concealment instruction', 'exfiltration', 'credential request', 'addressed to a model',
+]);
+
+// Signals that are commonplace in ordinary text. They add to a finding that
+// already exists; on their own they never make one.
+const INCIDENTAL = new Set(['embedded URL', 'secret reference', 'tool-call reference']);
+
+/** True when the intents show the text is written to instruct a model. */
+export function isAddressed(intents) {
+  return intents.some((i) => ADDRESSED.has(i.label));
+}
+
+/** True when at least one intent is more than a commonplace mention. */
+export function isPointed(intents) {
+  return intents.some((i) => !INCIDENTAL.has(i.label));
+}
 
 export function readIntent(text) {
   const hits = [];

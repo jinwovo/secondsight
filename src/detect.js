@@ -288,11 +288,19 @@ function findHomographHosts(text) {
  * their own script with Latin inside one token, so those combinations are not
  * treated as suspicious.
  */
+/**
+ * A measurement, not a word: `459μs`, `15μm`, `μg`. The SI micro
+ * prefix is typed as Greek mu far more often than as the micro sign, and a
+ * benchmark table full of microseconds is not a spoofing attempt.
+ */
+const MICRO_UNIT = /^[_*]*[\d.,]*μ(?:s|sec|m|g|l|L|V|A|F|W|Hz|mol|Pa)[_*]*$/;
+
 function findMixedScriptWords(text, hostSpans = []) {
   const out = [];
   for (const w of tokenizeWords(text)) {
     if (!LATIN_RE.test(w.word)) continue;
     if (overlapsAny(w.start, w.end, hostSpans)) continue;   // the URL finding owns it
+    if (MICRO_UNIT.test(w.word)) continue;
     const foreign = [];
     for (const [name, re] of HOMOGLYPH_SCRIPTS) {
       if (re.test(w.word)) foreign.push(name);
@@ -986,23 +994,30 @@ function analyzeLoadedComments(text) {
   if (!comments.length) return [];
 
   const joined = comments.map((c) => c.text).join('\n');
+  const kinds = new Set(comments.map((c) => c.kind));
+  const named = kinds.size > 1 ? 'A comment' : kinds.has('markdown') ? 'A Markdown comment' : 'An HTML comment';
   return [finding({
     id: 'instruction-comment',
-    title: 'An HTML comment addressed to a machine',
+    title: named + ' addressed to a machine',
     severity: HIGH,
     kind: KIND.MARKUP,
     count: comments.length,
     positions: comments.map((c) => c.start),
     spans: comments.map((c) => [c.start, c.end]),
     decoded: excerpt(joined, 1200),
-    scheme: 'HTML comment',
+    scheme: kinds.size > 1 ? 'comment' : kinds.has('markdown') ? 'Markdown comment' : 'HTML comment',
     intents: readIntent(joined),
+    samples: kinds.has('markdown') ? ['[//]: # (...) renders nowhere'] : [],
     reference: 'comment-borne prompt injection',
     detail:
       'Comments render nowhere and tokenize like any other text, so a model reading the '
-      + 'source of a page reads them in full. Ordinary comments are not reported here -- '
-      + 'this one is, because what it says reads as an instruction rather than as a note '
-      + 'to another developer.',
+      + 'source of a page reads them in full'
+      + (kinds.has('markdown')
+        ? ' -- and a Markdown link definition that nothing links to is a comment in all but '
+          + 'name: its label and title never reach the page.'
+        : '.')
+      + ' Ordinary comments are not reported here -- this one is, because what it says '
+      + 'reads as an instruction rather than as a note to another developer.',
   })];
 }
 
