@@ -905,10 +905,21 @@ describe('command line', () => {
     const dir = scratch();
     writeFileSync(join(dir, '::warning::pwned.md'), 'x ' + TAGS);
     writeFileSync(join(dir, 'esc' + String.fromCharCode(27) + '[2Jname.md'), 'x ' + TAGS);
-    const out = spawnSync(process.execPath, [CLI, '.', '--no-color'], { cwd: dir, encoding: 'utf8' }).stdout;
+    // Outside Actions, so the only way a line could open with `::` is the filename.
+    const env = { ...process.env };
+    delete env.GITHUB_ACTIONS;
+    const out = spawnSync(process.execPath, [CLI, '.', '--no-color'], { cwd: dir, env, encoding: 'utf8' }).stdout;
     assert.equal(out.split('\n').filter((l) => /^\s*::/.test(l)).length, 0);
     assert.ok(out.includes('./::warning::pwned.md'));
     assert.ok(!out.includes(String.fromCharCode(27)) && out.includes('esc\\x1b[2Jname.md'));
+
+    // Inside Actions the same names become annotation properties, escaped.
+    const actions = spawnSync(process.execPath, [CLI, '.', '--no-color'],
+      { cwd: dir, env: { ...env, GITHUB_ACTIONS: 'true', GITHUB_WORKSPACE: dir }, encoding: 'utf8' }).stdout;
+    const commands = actions.split('\n').filter((l) => /^\s*::/.test(l));
+    assert.equal(commands.length, 2);
+    assert.ok(commands.every((l) => /^::error file=[^:,]*,line=/.test(l)), commands.join('\n'));
+    assert.ok(commands.some((l) => l.includes('file=%3A%3Awarning%3A%3Apwned.md')));
   });
 
   test('binary files are skipped by content, not by guess', () => {
