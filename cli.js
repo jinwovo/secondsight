@@ -18,6 +18,7 @@ import { analyze, verdictFor, SEVERITY } from './src/detect.js';
 import { sanitize } from './src/sanitize.js';
 import { buildSarif } from './src/sarif.js';
 import { compare, markSummary } from './src/compare.js';
+import { buildAnnotations } from './src/annotate.js';
 
 const VERSION = '1.6.0';
 
@@ -41,6 +42,7 @@ Options
   --exclude <path>   skip a file or directory; repeatable
   --all              report every file, not just the ones with findings
   --no-gitignore     also scan untracked files that .gitignore excludes
+  --no-annotations   inside GitHub Actions, do not mark findings on the PR
   --no-color         plain output
   -h, --help         this
 
@@ -55,7 +57,7 @@ const args = process.argv.slice(2);
 const opts = {
   json: false, sarif: false, sarifPath: null,
   fix: false, all: false, color: true, staged: false, compare: false,
-  failOn: 3, failOnExplicit: false, paths: [], gitignore: true,
+  failOn: 3, failOnExplicit: false, paths: [], gitignore: true, annotations: true,
   ignore: new Set(), exclude: [],
 };
 
@@ -83,6 +85,7 @@ for (let i = 0; i < args.length; i++) {
     if (p) opts.exclude.push(slash(p));
   } else if (a === '--all') opts.all = true;
   else if (a === '--no-gitignore') opts.gitignore = false;
+  else if (a === '--no-annotations') opts.annotations = false;
   else if (a === '--no-color') opts.color = false;
   else if (a === '--fail-on') {
     const level = String(args[++i] || '').toUpperCase();
@@ -103,6 +106,21 @@ function existsAsPath(p) {
 /** One path spelling, so a Windows backslash and a POSIX slash compare equal. */
 function slash(p) {
   return String(p).replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+}
+
+/**
+ * A path as it is safe to print.
+ *
+ * A filename is attacker-controlled text too. On Linux it can hold an escape
+ * sequence, which would repaint the terminal this report is printed to, or a
+ * newline, or start with `::`, which the GitHub Actions runner reads as a
+ * workflow command. So control characters are shown as escapes, and a path
+ * that would open a line with `::` is written with a leading `./`.
+ */
+function shown(path) {
+  const s = String(path).replace(/[\x00-\x1f\x7f-\x9f]/g,
+    (c) => '\\x' + c.charCodeAt(0).toString(16).padStart(2, '0'));
+  return /^\s*::/.test(s) ? './' + s : s;
 }
 
 function fail(message) {
@@ -173,7 +191,10 @@ function skip(path, reason) {
  * first 8 KB mean binary. Returns null for binary.
  */
 function readText(path) {
-  const bytes = readFileSync(path);
+  return decodeBytes(readFileSync(path));
+}
+
+function decodeBytes(bytes) {
   if (bytes[0] === 0xff && bytes[1] === 0xfe) {
     return { text: bytes.subarray(2).toString('utf16le'), encoding: 'utf16le' };
   }
@@ -308,7 +329,7 @@ function reportText(label, result) {
   if (sev < 0 && !opts.all) return;
 
   const tag = sev < 0 ? paint('32', 'CLEAN') : paint(SEVERITY_COLOR[sev], result.verdict.label);
-  process.stdout.write('\n' + bold(label) + '  ' + tag + '\n');
+  process.stdout.write('\n' + bold(shown(label)) + '  ' + tag + '\n');
   if (sev < 0) return;
 
   process.stdout.write(dim('  ' + result.verdict.line) + '\n');
@@ -389,14 +410,14 @@ function runCompare(pathA, pathB) {
   }
 
   const TONE = { empty: '2', identical: '32', marked: '1;31', edited: '33' };
-  process.stdout.write('\n' + bold(pathA) + dim('  vs  ') + bold(pathB) + '\n');
+  process.stdout.write('\n' + bold(shown(pathA)) + dim('  vs  ') + bold(shown(pathB)) + '\n');
   process.stdout.write(paint(TONE[cmp.relation], cmp.headline) + '\n');
   process.stdout.write(dim(wrapText(cmp.detail, 76, '  ')) + '\n');
 
   for (const copy of cmp.copies) {
     const where = copy.label === 'A' ? pathA : pathB;
     process.stdout.write(
-      '\n  ' + bold('copy ' + copy.label) + dim('  ' + where) + '\n'
+      '\n  ' + bold('copy ' + copy.label) + dim('  ' + shown(where)) + '\n'
       + dim('    ' + copy.hidden + ' hidden character' + (copy.hidden === 1 ? '' : 's'))
       + (copy.signature ? dim('    fingerprint ') + paint('36', copy.signature) : '') + '\n',
     );
@@ -431,24 +452,62 @@ function runCompare(pathA, pathB) {
 // --staged: the files git is about to commit
 // ---------------------------------------------------------------------------
 
+/** The bytes git is about to commit, keyed by absolute path. Filled by stagedFiles. */
+const stagedBlobs = new Map();
+
+/**
+ * The files staged for commit, and their staged content.
+ *
+ * The content comes from the index, not from the working tree. A pre-commit
+ * hook that reads the working copy can be walked past: stage a file with a
+ * payload in it, tidy the working copy, commit -- the hook sees the tidy one,
+ * and the payload goes into history. What is scanned has to be what is
+ * committed, byte for byte.
+ *
+ * `--no-renames` makes a renamed file an added one, so moving a file while
+ * slipping something into it is scanned like any other change. Symlinks and
+ * submodules are staged as a link target and a commit id, not as text.
+ */
 function stagedFiles() {
-  let out = '';
+  const git = (args, input) => execFileSync('git', args, {
+    input, maxBuffer: 256 * 1024 * 1024, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'],
+  });
+  let top;
+  let raw;
   try {
-    out = execFileSync('git', ['diff', '--cached', '--name-only', '--diff-filter=ACM'], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
-    });
+    top = git(['rev-parse', '--show-toplevel']).toString('utf8').trim();
+    raw = git(['diff', '--cached', '--raw', '-z', '--no-renames', '--diff-filter=ACMT']).toString('utf8');
   } catch {
     fail('--staged needs to run inside a git repository');
   }
-  return out.split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((path) => existsAsPath(path) && isReadable(path) && !isExcluded(path))
-    .filter((path) => {
-      if (statSync(path).size <= MAX_BYTES) return true;
-      skip(path, 'larger than ' + (MAX_BYTES >> 20) + ' MB');
-      return false;
-    });
+
+  // -z --raw: ":<old mode> <new mode> <old sha> <new sha> <status>" NUL <path> NUL
+  const wanted = [];
+  const fields = raw.split('\0');
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    const meta = fields[i].replace(/^:/, '').split(' ');
+    const [, mode, , sha] = meta;
+    const path = resolve(top, fields[i + 1]);
+    if (!sha || mode === '120000' || mode === '160000') continue;
+    if (!isReadable(path) || isExcluded(path)) continue;
+    wanted.push({ path, sha });
+  }
+  if (!wanted.length) return [];
+
+  // One process for every blob: "<sha> blob <size>" LF <bytes> LF, per request.
+  const batch = git(['cat-file', '--batch'], wanted.map((w) => w.sha).join('\n') + '\n');
+  let at = 0;
+  const out = [];
+  for (const { path } of wanted) {
+    const eol = batch.indexOf(0x0a, at);
+    const size = Number(batch.subarray(at, eol).toString('utf8').split(' ')[2]);
+    const bytes = batch.subarray(eol + 1, eol + 1 + size);
+    at = eol + 1 + size + 1;
+    if (size > MAX_BYTES) { skip(path, 'larger than ' + (MAX_BYTES >> 20) + ' MB'); continue; }
+    stagedBlobs.set(path, bytes);
+    out.push(path);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -475,7 +534,9 @@ if (!reading) {
 } else {
   for (const path of targets) {
     let read;
-    try { read = readText(path); } catch { skip(path, 'unreadable'); continue; }
+    try {
+      read = stagedBlobs.has(path) ? decodeBytes(stagedBlobs.get(path)) : readText(path);
+    } catch { skip(path, 'unreadable'); continue; }
     if (!read) { skip(path, 'binary'); continue; }
     const { text, encoding } = read;
     const result = withIgnores(analyze(text));
@@ -485,11 +546,23 @@ if (!reading) {
 
     if (opts.fix && result.verdict.severity >= 0) {
       const cleaned = sanitize(text);
-      if (cleaned.text !== text) {
+      // A staged fix is written to the working copy, which is only safe when
+      // the working copy is what was staged. Otherwise the fix would rewrite a
+      // file nobody scanned, and the payload would still be in the index.
+      const staged = stagedBlobs.get(path);
+      let current = null;
+      try { current = staged ? readFileSync(path) : null; } catch { /* deleted since staging */ }
+      if (staged && !(current && current.equals(staged))) {
+        process.stderr.write(
+          'secondsight: not fixed, the working copy differs from what is staged: '
+          + shown(relative(process.cwd(), path) || path) + '\n',
+        );
+      } else if (cleaned.text !== text) {
         writeFileSync(path, encodeAs(cleaned.text, encoding));
         if (!opts.json && !opts.sarif) {
           process.stdout.write('  ' + paint('32', 'fixed') + dim(
-            '  removed ' + cleaned.removed + ' character' + (cleaned.removed === 1 ? '' : 's'),
+            '  removed ' + cleaned.removed + ' character' + (cleaned.removed === 1 ? '' : 's')
+            + (staged ? '  -- git add it to stage the fix' : ''),
           ) + '\n');
         }
       }
@@ -538,6 +611,14 @@ if (opts.sarif) {
     })),
   }, null, 2) + '\n');
 } else if (reading) {
+  // Inside GitHub Actions, each finding is also marked on its line of the pull
+  // request. Paths are relative to the checkout, which is what GitHub matches.
+  if (opts.annotations && process.env.GITHUB_ACTIONS === 'true') {
+    const root = process.env.GITHUB_WORKSPACE || process.cwd();
+    process.stdout.write('\n' + buildAnnotations(
+      reports.map(({ path, result }) => ({ path: relative(root, resolve(path)), result })),
+    ));
+  }
   const flagged = reports.filter((r) => r.result.verdict.severity >= 0).length;
   process.stdout.write('\n' + dim(
     reports.length + ' file' + (reports.length === 1 ? '' : 's') + ' scanned, '
@@ -556,7 +637,7 @@ if (ignoredCount && !opts.json && !opts.sarif) {
 // files a scan would have read land here; a directory of images is not news.
 for (const { path, reason } of skipped) {
   process.stderr.write(
-    'secondsight: not scanned (' + reason + '): ' + (relative(process.cwd(), path) || path) + '\n',
+    'secondsight: not scanned (' + reason + '): ' + shown(relative(process.cwd(), path) || path) + '\n',
   );
 }
 

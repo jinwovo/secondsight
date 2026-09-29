@@ -179,6 +179,8 @@ Or without the Action, on any runner that has Node:
 
 `--fail-on` (and the Action's `fail-on`) takes `info`, `low`, `medium`, `high`, or `critical`. The build fails at or above that level.
 
+Inside GitHub Actions -- through the Action or a plain `npx` step -- every finding is also annotated on its line of the pull request, with the decoded payload in the message. No SARIF upload and no extra permissions. The payload is attacker-written text, so it is escaped the way the runner reads it and cannot open a workflow command of its own; neither can a filename. `--no-annotations` turns this off.
+
 **As GitHub code scanning** -- upload findings to the Security tab, where each one becomes an inline annotation on the pull request. secondsight emits [SARIF 2.1.0](https://sarifweb.azurewebsites.net/), with codepoint offsets resolved to line and column:
 
 ```yaml
@@ -204,7 +206,7 @@ The same output is available straight from the CLI: `npx secondsight . --sarif s
 
 ## Catch it before it is committed
 
-`--staged` scans only what git is about to commit, which makes it fast enough to sit in a pre-commit hook:
+`--staged` scans only what git is about to commit -- the staged content itself, read from the index, not the working copy. A hook that reads the working copy can be walked past by staging a payload and then tidying the file; this one sees exactly the bytes the commit will hold, including a file that was renamed on the way. It is fast enough to sit in a pre-commit hook:
 
 ```bash
 cat > .git/hooks/pre-commit <<'HOOK'
@@ -294,7 +296,7 @@ Tags block | variation-selector payloads | zero-width steganography (decoded acr
 ## Development
 
 ```bash
-node --test test/test.js     # 102 tests, zero dependencies
+node --test test/test.js     # 105 tests, zero dependencies
 npm run selfcheck            # the tool scans its own source and finds it clean
 python -m http.server 8080   # then open http://localhost:8080
 ```
