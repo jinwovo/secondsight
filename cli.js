@@ -20,7 +20,7 @@ import { buildSarif } from './src/sarif.js';
 import { compare, markSummary } from './src/compare.js';
 import { buildAnnotations } from './src/annotate.js';
 
-const VERSION = '1.6.0';
+const VERSION = '1.7.0';
 
 const USAGE = `
 secondsight -- find the text you cannot see
